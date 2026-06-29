@@ -1,24 +1,11 @@
-//
-//  ContentView.swift
-//  spotly
-//
-//  Created by Denzel Nyatsanza on 6/28/26.
-//
-
 import SwiftUI
+
+// ContentView is no longer the app root.
+// Entry point: spotlyApp → RootView → OnboardingView / MainTabView
+// This file is retained to avoid orphaned project references.
 
 struct ContentView: View {
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
+        RootView()
     }
-}
-
-#Preview {
-    ContentView()
 }
