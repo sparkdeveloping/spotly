@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "spotly_sample_spa_card_1.jpg",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
