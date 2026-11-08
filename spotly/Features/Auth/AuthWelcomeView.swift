@@ -32,7 +32,7 @@ struct AuthWelcomeView: View {
                             .font(SpotlyFont.title(.bold))
                             .foregroundStyle(SpotlyColors.textPrimary)
                             .multilineTextAlignment(.center)
-                        Text("Discover restaurants, events and experiences\nin Zimbabwe's top booking app.")
+                        Text("Discover restaurants, events and experiences\nacross the cities Spotly serves.")
                             .font(SpotlyFont.callout())
                             .foregroundStyle(SpotlyColors.textSecondary)
                             .multilineTextAlignment(.center)

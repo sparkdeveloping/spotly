@@ -11,6 +11,8 @@
 		AA0000010000000000000001 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000020000000000000002 /* FirebaseMessaging */; };
 		EE0000010000000000000001 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = EE0000020000000000000002 /* FirebaseAuth */; };
 		EE0000030000000000000003 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = EE0000040000000000000004 /* FirebaseFirestore */; };
+		F20000010000000000000001 /* FirebaseFunctions in Frameworks */ = {isa = PBXBuildFile; productRef = F20000020000000000000002 /* FirebaseFunctions */; };
+		F20000030000000000000003 /* FirebaseDatabase in Frameworks */ = {isa = PBXBuildFile; productRef = F20000040000000000000004 /* FirebaseDatabase */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -66,6 +68,8 @@
 				AA0000010000000000000001 /* FirebaseMessaging in Frameworks */,
 				EE0000010000000000000001 /* FirebaseAuth in Frameworks */,
 				EE0000030000000000000003 /* FirebaseFirestore in Frameworks */,
+				F20000010000000000000001 /* FirebaseFunctions in Frameworks */,
+				F20000030000000000000003 /* FirebaseDatabase in Frameworks */,
 			);
 		};
 		BB0000030000000000000003 /* Frameworks */ = {
@@ -135,6 +139,8 @@
 				AA0000020000000000000002 /* FirebaseMessaging */,
 				EE0000020000000000000002 /* FirebaseAuth */,
 				EE0000040000000000000004 /* FirebaseFirestore */,
+				F20000020000000000000002 /* FirebaseFunctions */,
+				F20000040000000000000004 /* FirebaseDatabase */,
 			);
 			productName = spotly;
 			productReference = 2631962E2FF0EA26001E8696 /* spotly.app */;
@@ -614,6 +620,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 2631963C2FF0ED2C001E8696 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseFirestore;
+		};
+		F20000020000000000000002 /* FirebaseFunctions */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 2631963C2FF0ED2C001E8696 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseFunctions;
+		};
+		F20000040000000000000004 /* FirebaseDatabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 2631963C2FF0ED2C001E8696 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseDatabase;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -9,3 +9,6 @@ FIREBASE_MESSAGING_SENDER_ID = 14197555543
 // Register the exact bundle ID as an iOS app under Firebase project spotly-africa,
 // then place its GOOGLE_APP_ID here to enable native FCM push registration.
 FIREBASE_IOS_APP_ID = 1:14197555543:ios:236ea2214ec0f9d1c3be12
+
+FIREBASE_FUNCTIONS_REGION = europe-west1
+FIREBASE_DATABASE_URL = https:/$()/spotly-africa-default-rtdb.europe-west1.firebasedatabase.app

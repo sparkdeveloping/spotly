@@ -23,7 +23,7 @@ struct ProductionHomeView: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 Label("\(service.title) couldn’t update", systemImage: service.icon).font(.headline)
                                 Text(error).font(.callout).foregroundStyle(.secondary)
-                                Button("Try again") { Task { await appState.marketplace.loadHome(city: appState.selectedCity, force: true) } }
+                                Button("Try again") { Task { if !appState.selectedCity.isEmpty { await appState.marketplace.loadHome(city: appState.selectedCity, force: true) } } }
                             }
                         }
                     }
@@ -36,12 +36,11 @@ struct ProductionHomeView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
             .refreshable {
-                async let home: Void = appState.marketplace.loadHome(city: appState.selectedCity, force: true)
-                async let activity: Void = appState.activity.load(user: appState.currentUser, force: true)
-                _ = await (home, activity)
+                if !appState.selectedCity.isEmpty { await appState.marketplace.loadHome(city: appState.selectedCity, force: true) }
+                if appState.isAuthenticated { await appState.activity.load(user: appState.currentUser, force: true) }
             }
-            .task(id: appState.selectedCity) {
-                await appState.marketplace.loadHome(city: appState.selectedCity)
+            .task(id: "\(appState.selectedCountryCode?.rawValue ?? ""):\(appState.selectedCity)") {
+                if !appState.selectedCity.isEmpty { await appState.marketplace.loadHome(city: appState.selectedCity) }
                 if appState.isAuthenticated { await appState.activity.load(user: appState.currentUser) }
             }
         }
@@ -58,7 +57,7 @@ struct ProductionHomeView: View {
                 .font(SpotlyFont.display(.bold))
                 .foregroundStyle(SpotlyColors.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Everyday plans, good finds and what comes next in \(appState.selectedCity).")
+            Text(appState.selectedCity.isEmpty ? "Choose your country and city to see what’s around you." : "Everyday plans, good finds and what comes next in \(appState.selectedCity).")
                 .font(SpotlyFont.body())
                 .foregroundStyle(SpotlyColors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -201,14 +200,23 @@ struct ProductionHomeView: View {
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             Menu {
-                ForEach(["Harare", "Bulawayo", "Mutare", "Gweru", "Victoria Falls"], id: \.self) { city in
-                    Button(city) { appState.selectedCity = city }
+                Section("Country") {
+                    ForEach(SpotlyCountryCatalog.countries, id: \.code) { country in
+                        Button(country.name) { appState.setCountryPreference(country.code) }
+                    }
+                }
+                if let country = appState.selectedCountry {
+                    Section("City") {
+                        ForEach(country.cities) { city in
+                            Button(city.name) { appState.setCountryPreference(country.code, city: city.name) }
+                        }
+                    }
                 }
             } label: {
-                Label(appState.selectedCity, systemImage: "location.fill")
+                Label(appState.selectedCity.nilIfBlank ?? appState.selectedCountry?.name ?? "Choose location", systemImage: "location.fill")
                     .font(SpotlyFont.subheadline(.semibold))
             }
-            .accessibilityLabel("Current city, \(appState.selectedCity)")
+            .accessibilityLabel("Current Spotly location")
         }
 
         ToolbarItem(placement: .topBarTrailing) {

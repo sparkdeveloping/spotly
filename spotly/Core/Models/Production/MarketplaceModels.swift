@@ -1,11 +1,9 @@
 import Foundation
 import SwiftUI
 
-nonisolated enum SpotlyServiceKind: String, CaseIterable, Codable, Identifiable, Hashable, Sendable {
-    case ride, eat, shop, book, events, send
-
+nonisolated extension SpotlyServiceID: Identifiable {
     var id: String { rawValue }
-    // Presentation names follow the web and brand kit. Backend IDs stay stable.
+    // Presentation names follow the web and brand kit. Wire IDs come from SpotlyContracts.swift.
     var title: String {
         switch self {
         case .eat: return "Bite"
@@ -289,8 +287,9 @@ nonisolated struct GeocodeResult: Decodable, Identifiable, Hashable, Sendable {
     let lng: Double
     let area: String?
     let city: String?
+    let country: SpotlyCountryCode
 
-    var point: RidePoint { RidePoint(lat: lat, lng: lng, accuracy: nil, label: label, formattedAddress: label, area: area, city: city) }
+    var point: RidePoint { RidePoint(lat: lat, lng: lng, accuracy: nil, country: country, label: label, formattedAddress: label, area: area, city: city) }
 }
 
 enum SavedEntityType: String, Codable, CaseIterable, Hashable {

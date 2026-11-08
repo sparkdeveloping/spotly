@@ -2,25 +2,9 @@ import Foundation
 
 // MARK: - Shared location
 
-nonisolated struct RidePoint: Codable, Hashable, Sendable {
-    let lat: Double
-    let lng: Double
-    let accuracy: Double?
-    let label: String?
-    let formattedAddress: String?
-    let area: String?
-    let city: String?
+typealias RidePoint = SpotlyLocationPoint
 
-    init(lat: Double, lng: Double, accuracy: Double? = nil, label: String? = nil, formattedAddress: String? = nil, area: String? = nil, city: String? = nil) {
-        self.lat = lat
-        self.lng = lng
-        self.accuracy = accuracy
-        self.label = label
-        self.formattedAddress = formattedAddress
-        self.area = area
-        self.city = city
-    }
-
+nonisolated extension SpotlyLocationPoint {
     var displayLabel: String { [label, formattedAddress, area, city].compactMap { $0?.nilIfBlank }.first ?? "Location" }
 }
 
@@ -43,7 +27,7 @@ nonisolated struct SendQuoteIntent: Hashable, Sendable {
 nonisolated struct RideQuoteRequest: Encodable, Sendable {
     let pickup: RidePoint
     let dropoff: RidePoint
-    let serviceType: String
+    let serviceType: SpotlyRideServiceTypeID
 }
 
 nonisolated struct RideQuoteResponse: Decodable, Sendable {
@@ -80,8 +64,10 @@ nonisolated struct RideRequestBody: Encodable, Sendable {
     let action = "request"
     let pickup: RidePoint
     let dropoff: RidePoint
-    let serviceType: String
-    let paymentMethod: String
+    let serviceType: SpotlyRideServiceTypeID
+    let paymentMethod: SpotlyPaymentMethod
+    let quotedTotal: Double
+    let quotedCurrency: SpotlyCurrencyCode
     let riderName: String?
     let riderPhone: String?
     let note: String?
@@ -166,7 +152,7 @@ nonisolated struct DriverLocation: Decodable, Hashable, Sendable {
 nonisolated struct ParcelQuoteRequest: Encodable, Sendable {
     let pickup: RidePoint
     let dropoff: RidePoint
-    let parcelSize: String
+    let parcelSize: SpotlyParcelSize
 }
 
 nonisolated struct ParcelQuoteResponse: Decodable, Sendable {
@@ -204,8 +190,8 @@ nonisolated struct ParcelRequestBody: Encodable, Sendable {
     let action = "request"
     let pickup: RidePoint
     let dropoff: RidePoint
-    let parcelSize: String
-    let paymentMethod: String
+    let parcelSize: SpotlyParcelSize
+    let paymentMethod: SpotlyPaymentMethod
     let senderName: String
     let senderPhone: String
     let recipientName: String
@@ -214,9 +200,11 @@ nonisolated struct ParcelRequestBody: Encodable, Sendable {
     let estimatedWeightKg: Double?
     let declaredValue: Double?
     let instructions: String?
-    let pickupMode: String
+    let pickupMode: SpotlyPickupMode
     let scheduledPickupAt: String?
     let prohibitedAcknowledged = true
+    let quotedTotal: Double
+    let quotedCurrency: SpotlyCurrencyCode
 }
 
 nonisolated struct ParcelRequestResponse: Decodable, Sendable {
@@ -309,9 +297,9 @@ nonisolated struct CommerceOrderCreateBody: Encodable, Sendable {
     let businessId: String
     let branchId: String
     let items: [Line]
-    let currency: String
+    let currency: SpotlyCurrencyCode
     let promoCode: String?
-    let paymentMethod: String
+    let paymentMethod: SpotlyPaymentMethod
     let fulfilment: String
     let delivery: Delivery?
     let pickup: Pickup?
@@ -339,9 +327,9 @@ nonisolated struct CustomerTransactionCreateBody: Encodable, Sendable {
     let branchId: String
     let itemId: String
     let quantity: Int
-    let currency: String
+    let currency: SpotlyCurrencyCode
     let promoCode: String?
-    let paymentMethod: String
+    let paymentMethod: SpotlyPaymentMethod
     let contactName: String
     let contactPhone: String
     let notes: String?
@@ -402,9 +390,9 @@ nonisolated struct OrderStatusBody: Encodable, Sendable { let orderId: String }
 
 // MARK: - Unified activity
 
-nonisolated enum ActivityKind: String, Codable, Hashable, CaseIterable, Sendable {
-    case order, appointment, booking, ticket, ride, send
+typealias ActivityKind = SpotlyActivityKind
 
+nonisolated extension SpotlyActivityKind {
     var title: String {
         switch self {
         case .order: return "Order"
@@ -413,6 +401,8 @@ nonisolated enum ActivityKind: String, Codable, Hashable, CaseIterable, Sendable
         case .ticket: return "Ticket"
         case .ride: return "Ride"
         case .send: return "Send"
+        case .assistShopping: return "Assist shopping"
+        case .assistBooking: return "Assist booking"
         }
     }
 
@@ -424,6 +414,8 @@ nonisolated enum ActivityKind: String, Codable, Hashable, CaseIterable, Sendable
         case .ticket: return "ticket.fill"
         case .ride: return "car.fill"
         case .send: return "shippingbox.fill"
+        case .assistShopping: return "person.crop.circle.badge.checkmark"
+        case .assistBooking: return "calendar.badge.checkmark"
         }
     }
 }
@@ -444,7 +436,7 @@ nonisolated struct ActivityRecord: Decodable, Identifiable, Hashable, Sendable {
     let paymentStatus: String
     let number: String
     let total: Double?
-    let currency: String
+    let currency: SpotlyCurrencyCode?
     let createdAt: Date?
     let orderId: String?
     let rideId: String?
@@ -453,13 +445,17 @@ nonisolated struct ActivityRecord: Decodable, Identifiable, Hashable, Sendable {
     var service: SpotlyServiceKind? = nil
     var scheduledAt: Date? = nil
     var attentionReason: String? = nil
-    var primaryAction: String? = nil
+    var primaryAction: SpotlyPrimaryAction? = nil
 
     var actionTitle: String {
         switch primaryAction {
-        case "pay": return "Pay now"
-        case "review": return "Review details"
-        default: return "View details"
+        case .pay: return "Pay now"
+        case .track: return "Track"
+        case .support: return "Get help"
+        case .reviewQuote: return "Review quote"
+        case .reviewAlternative: return "Review time"
+        case .reviewSubstitution: return "Review replacement"
+        case .open, .none: return "View details"
         }
     }
 
@@ -467,7 +463,7 @@ nonisolated struct ActivityRecord: Decodable, Identifiable, Hashable, Sendable {
         let stateValue = state.lowercased()
         let payment = paymentStatus.lowercased()
         if PollingPolicy.isTerminal(stateValue) { return .past }
-        if ["unpaid", "failed", "action_required", "awaiting_payment"].contains(payment) && (total ?? 0) > 0 && orderId != nil || stateValue.contains("action") || stateValue.contains("substitution") { return .attention }
+        if attentionReason != nil || ["unpaid", "failed", "action_required", "awaiting_payment"].contains(payment) && (total ?? 0) > 0 && orderId != nil || stateValue.contains("action") || stateValue.contains("substitution") { return .attention }
         if ["completed", "cancelled", "failed", "refunded", "delivered"].contains(stateValue) { return .past }
         if ["appointment", "booking", "ticket"].contains(kind.rawValue) && ["accepted", "confirmed", "scheduled", "submitted"].contains(stateValue) { return .upcoming }
         return .active

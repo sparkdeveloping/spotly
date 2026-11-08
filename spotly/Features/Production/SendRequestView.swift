@@ -59,10 +59,10 @@ struct SendRequestView: View {
                     }
 
                     Section("1. Route") {
-                        NavigationLink { AddressPickerView(city: appState.selectedCity, selectedPoint: $pickup, selectedLabel: $pickupLabel) } label: {
+                        NavigationLink { AddressPickerView(country: appState.selectedCountryCode, city: appState.selectedCity, selectedPoint: $pickup, selectedLabel: $pickupLabel) } label: {
                             LabeledContent("Pickup") { Text(pickupLabel.isEmpty ? "Choose" : pickupLabel).lineLimit(2) }
                         }
-                        NavigationLink { AddressPickerView(city: appState.selectedCity, selectedPoint: $dropoff, selectedLabel: $dropoffLabel) } label: {
+                        NavigationLink { AddressPickerView(country: appState.selectedCountryCode, city: appState.selectedCity, selectedPoint: $dropoff, selectedLabel: $dropoffLabel) } label: {
                             LabeledContent("Drop-off") { Text(dropoffLabel.isEmpty ? "Choose" : dropoffLabel).lineLimit(2) }
                         }
                     }
@@ -208,7 +208,7 @@ struct SendRequestView: View {
         guard appState.isAuthenticated else { appState.hasCompletedEntryFlow = false; appState.isGuestMode = false; return }
         guard !isRequesting, !isQuoting, !requestOutcomeUncertain, createdParcelID == nil,
               let intent = currentQuoteIntent, lastQuotedIntent == intent,
-              quoteResponse != nil else {
+              let quote = quoteResponse?.quote else {
             errorMessage = "Your route or parcel size changed. Refresh the delivery quote first."
             return
         }
@@ -220,11 +220,17 @@ struct SendRequestView: View {
         isRequesting = true; errorMessage = nil
         defer { isRequesting = false }
         do {
+            guard let size = SpotlyParcelSize(rawValue: parcelSize),
+                  let payment = SpotlyPaymentMethod(rawValue: paymentMethod),
+                  let mode = SpotlyPickupMode(rawValue: pickupMode),
+                  let currency = SpotlyCurrencyCode(rawValue: quote.currency) else {
+                throw SpotlyAPIError.server(status: 422, message: "The Send quote is not compatible with this app version.")
+            }
             let body = ParcelRequestBody(
                 pickup: pickup,
                 dropoff: dropoff,
-                parcelSize: parcelSize,
-                paymentMethod: paymentMethod,
+                parcelSize: size,
+                paymentMethod: payment,
                 senderName: senderName,
                 senderPhone: senderPhone,
                 recipientName: recipientName,
@@ -233,8 +239,10 @@ struct SendRequestView: View {
                 estimatedWeightKg: Double(weight),
                 declaredValue: Double(declaredValue),
                 instructions: instructions.nilIfBlank,
-                pickupMode: pickupMode,
-                scheduledPickupAt: pickupMode == "scheduled" ? ISO8601DateFormatter().string(from: scheduledAt) : nil
+                pickupMode: mode,
+                scheduledPickupAt: pickupMode == "scheduled" ? ISO8601DateFormatter().string(from: scheduledAt) : nil,
+                quotedTotal: quote.total,
+                quotedCurrency: currency
             )
             let response = try await SpotlySendService.shared.request(body)
             createdParcelID = response.parcelJobId

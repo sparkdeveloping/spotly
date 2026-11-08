@@ -181,9 +181,9 @@ extension ProductionRegressionTests {
 
 extension ProductionRegressionTests {
     @Test func rideQuotesAreBoundToExactRouteAndService() {
-        let origin = RidePoint(lat: -17.825, lng: 31.035, label: "Harare")
-        let destination = RidePoint(lat: -17.814, lng: 31.081, label: "Eastlea")
-        let changedDestination = RidePoint(lat: -17.781, lng: 31.056, label: "Borrowdale")
+        let origin = RidePoint(lat: -17.825, lng: 31.035, country: .ZW, label: "Harare")
+        let destination = RidePoint(lat: -17.814, lng: 31.081, country: .ZW, label: "Eastlea")
+        let changedDestination = RidePoint(lat: -17.781, lng: 31.056, country: .ZW, label: "Borrowdale")
         let current = RideQuoteIntent(pickup: origin, dropoff: destination, serviceType: "economy")
         #expect(current == RideQuoteIntent(pickup: origin, dropoff: destination, serviceType: "economy"))
         #expect(current != RideQuoteIntent(pickup: origin, dropoff: changedDestination, serviceType: "economy"))
@@ -192,8 +192,8 @@ extension ProductionRegressionTests {
     }
 
     @Test func sendQuotesAreBoundToExactRouteAndParcelSize() {
-        let origin = RidePoint(lat: -17.825, lng: 31.035)
-        let destination = RidePoint(lat: -17.814, lng: 31.081)
+        let origin = RidePoint(lat: -17.825, lng: 31.035, country: .ZW)
+        let destination = RidePoint(lat: -17.814, lng: 31.081, country: .ZW)
         let medium = SendQuoteIntent(pickup: origin, dropoff: destination, size: "medium")
         #expect(medium != SendQuoteIntent(pickup: origin, dropoff: destination, size: "large"))
         #expect(medium != SendQuoteIntent(pickup: destination, dropoff: origin, size: "medium"))

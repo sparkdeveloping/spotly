@@ -17,8 +17,8 @@ struct SpotlyLocationSnapshot: Equatable {
         lhs.capturedAt == rhs.capturedAt
     }
 
-    var ridePoint: RidePoint {
-        RidePoint(lat: coordinate.latitude, lng: coordinate.longitude, accuracy: horizontalAccuracy)
+    func ridePoint(country: SpotlyCountryCode) -> RidePoint {
+        RidePoint(lat: coordinate.latitude, lng: coordinate.longitude, accuracy: horizontalAccuracy, country: country)
     }
 }
 

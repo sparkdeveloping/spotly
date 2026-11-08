@@ -178,13 +178,13 @@ final class ActivityStore {
         let attention = ["unpaid", "failed", "action_required", "awaiting_payment"].contains(payment.lowercased()) && (total ?? 0) > 0 ? "Payment required" : nil
         var record = ActivityRecord(
             id: "order:\(doc.id)", kind: kind, title: title, subtitle: subtitle, state: state,
-            paymentStatus: payment, number: number, total: total, currency: currency,
+            paymentStatus: payment, number: number, total: total, currency: SpotlyCurrencyCode(rawValue: currency),
             createdAt: createdAt, orderId: doc.id, rideId: nil, parcelId: nil
         )
         record.service = kind == .ticket ? .events : ([.appointment, .booking].contains(kind) ? .book : nil)
         record.scheduledAt = scheduledAt
         record.attentionReason = attention
-        record.primaryAction = attention == nil ? nil : "pay"
+        record.primaryAction = attention == nil ? nil : .pay
         return record
     }
 
@@ -196,12 +196,12 @@ final class ActivityStore {
         var record = ActivityRecord(
             id: "ride:\(ride.id)", kind: .ride, title: "Spotly Ride", subtitle: route.isEmpty ? "Ride request" : route,
             state: ride.state, paymentStatus: payment, number: ride.number ?? ride.id, total: total,
-            currency: ride.quote?.currency ?? ride.currency ?? "USD", createdAt: created,
+            currency: SpotlyCurrencyCode(rawValue: ride.quote?.currency ?? ride.currency ?? "USD"), createdAt: created,
             orderId: nil, rideId: ride.id, parcelId: nil
         )
         record.service = .ride
         if ["unpaid", "failed", "action_required", "awaiting_payment"].contains(payment.lowercased()), (total ?? 0) > 0 {
-            record.attentionReason = "Payment required"; record.primaryAction = "pay"
+            record.attentionReason = "Payment required"; record.primaryAction = .pay
         }
         return record
     }
@@ -214,13 +214,13 @@ final class ActivityStore {
             id: "send:\(parcel.id)", kind: .send, title: "Spotly Send",
             subtitle: route.isEmpty ? (clean(parcel.parcelDescription).nilIfEmpty ?? "Parcel delivery") : route,
             state: parcel.state, paymentStatus: payment, number: parcel.number ?? parcel.id, total: total,
-            currency: parcel.quote?.currency ?? parcel.currency ?? "USD", createdAt: parseDate(parcel.createdAt),
+            currency: SpotlyCurrencyCode(rawValue: parcel.quote?.currency ?? parcel.currency ?? "USD"), createdAt: parseDate(parcel.createdAt),
             orderId: parcel.orderId, rideId: nil, parcelId: parcel.id
         )
         record.service = .send
         record.scheduledAt = parseDate(parcel.scheduledPickupAt)
         if ["unpaid", "failed", "action_required", "awaiting_payment"].contains(payment.lowercased()), (total ?? 0) > 0 {
-            record.attentionReason = "Payment required"; record.primaryAction = "pay"
+            record.attentionReason = "Payment required"; record.primaryAction = .pay
         }
         return record
     }

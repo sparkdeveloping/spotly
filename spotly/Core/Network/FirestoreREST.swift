@@ -65,6 +65,8 @@ final class FirestoreREST {
     func ensureUserProfile(uid: String, email: String, displayName: String, idToken _: String) async throws -> SpotlyUser {
         let ref = database.collection("users").document(uid)
         let snapshot = try await ref.getDocument()
+        let overrideSnapshot = try? await database.collection("accountCountryOverrides").document(uid).getDocument()
+        let overrideCode = (overrideSnapshot?.data()?["countryCode"] as? String).flatMap(SpotlyCountryCode.init(rawValue:))
         if snapshot.exists {
             let fields = snapshot.data() ?? [:]
             let existingName = (fields["displayName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -80,7 +82,11 @@ final class FirestoreREST {
                 location: preferences["city"] as? String ?? "",
                 isVerified: false,
                 createdAt: (fields["createdAt"] as? Timestamp)?.dateValue() ?? Date(),
-                favouriteIDs: []
+                favouriteIDs: [],
+                countryCode: (preferences["countryCode"] as? String).flatMap(SpotlyCountryCode.init(rawValue:)),
+                countryOverrideCode: overrideCode,
+                countrySource: preferences["countrySource"] as? String,
+                preferredCity: preferences["preferredCity"] as? String ?? preferences["city"] as? String ?? ""
             )
         }
         // Only create if missing. Do not overwrite existing roles or permissions.
@@ -98,12 +104,16 @@ final class FirestoreREST {
                           createdAt: Date(), favouriteIDs: [])
     }
 
-    func updateUserProfile(uid: String, displayName: String, phone: String, city: String, token _: String) async throws {
-        // Dot-path update preserves all other preference fields; overwriting the
-        // preferences map could erase a customer's settings from another device.
+    func updateUserProfile(uid: String, displayName: String, phone: String, country: SpotlyCountryCode, city: String, token _: String) async throws {
+        // Dot-path updates preserve every unrelated preference field. Country is
+        // explicit so a profile edit can never silently inherit Zimbabwe.
+        let normalizedPhone = try SpotlyCountryEngine.normalizePhone(phone, country: country)
         try await database.collection("users").document(uid).updateData([
             "displayName": displayName,
-            "phoneNumber": phone,
+            "phoneNumber": normalizedPhone,
+            "preferences.countryCode": country.rawValue,
+            "preferences.countrySource": "manual",
+            "preferences.preferredCity": city,
             "preferences.city": city,
             "updatedAt": Timestamp(date: Date())
         ])

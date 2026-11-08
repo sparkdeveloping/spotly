@@ -11,6 +11,12 @@ nonisolated struct SpotlyUser: Identifiable, Codable, Sendable {
     var isVerified: Bool
     var createdAt: Date
     var favouriteIDs: [String]
+    var countryCode: SpotlyCountryCode? = nil
+    var countryOverrideCode: SpotlyCountryCode? = nil
+    var countrySource: String? = nil
+    var preferredCity: String = ""
+
+    var effectiveCountryCode: SpotlyCountryCode? { countryOverrideCode ?? countryCode }
 
     static let preview = SpotlyUser(
         id: "user_001",

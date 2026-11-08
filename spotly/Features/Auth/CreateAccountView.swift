@@ -23,7 +23,7 @@ struct CreateAccountView: View {
                         Text("Create your account")
                             .font(SpotlyFont.title2(.bold))
                             .foregroundStyle(SpotlyColors.textPrimary)
-                        Text("Join Spotly and start discovering\neverything Zimbabwe has to offer.")
+                        Text("Join Spotly and start discovering\neverything your city has to offer.")
                             .font(SpotlyFont.callout())
                             .foregroundStyle(SpotlyColors.textSecondary)
                             .multilineTextAlignment(.center)

@@ -47,7 +47,7 @@ struct EntryFlowView: View {
         appState.currentUser = user
         appState.isGuestMode = false
         appState.authState = .authenticated
-        if let city = user.location.nilIfBlank { appState.selectedCity = city }
+        appState.applyCountryContext(from: user)
         withAnimation(SpotlyMotion.pageTransition) { appState.hasCompletedEntryFlow = true }
         Task {
             async let saved: Void = appState.saved.load(user: user)

@@ -19,7 +19,7 @@ private let pages: [OnboardingPage] = [
     OnboardingPage(
         icon: "location.circle.fill",
         accent: Color(hex: "5EEAD4"),
-        headline: "Zimbabwe, made more useful.",
+        headline: "Your city, made more useful.",
         body: "Discover what is live in your city. Precise location is optional and only requested when nearby discovery, Ride, Send or delivery needs it.",
         gradient: SpotlyGradients.emerald
     ),

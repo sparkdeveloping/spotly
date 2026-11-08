@@ -111,7 +111,8 @@ struct ProfileEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var phone = ""
-    @State private var city = "Harare"
+    @State private var country: SpotlyCountryCode? = nil
+    @State private var city = ""
     @State private var saving = false
     @State private var errorMessage: String?
 
@@ -121,11 +122,21 @@ struct ProfileEditorView: View {
                 TextField("Full name", text: $name).textContentType(.name)
                 TextField("Phone", text: $phone).textContentType(.telephoneNumber).keyboardType(.phonePad)
             }
-            Section("City") {
-                Picker("City", selection: $city) {
-                    ForEach(["Harare", "Bulawayo", "Mutare", "Gweru", "Masvingo", "Victoria Falls"], id: \.self) { Text($0).tag($0) }
+            Section("Country & city") {
+                Picker("Country", selection: Binding(get: { country?.rawValue ?? "" }, set: { value in
+                    country = SpotlyCountryCode(rawValue: value)
+                    city = country.flatMap { SpotlyCountryCatalog.definition(for: $0).cities.first?.name } ?? ""
+                })) {
+                    Text("Choose country").tag("")
+                    ForEach(SpotlyCountryCatalog.countries, id: \.code) { item in Text(item.name).tag(item.code.rawValue) }
                 }
-                Text("City-level discovery always works. Precise location is requested only when a feature needs it.")
+                if let country {
+                    Picker("City", selection: $city) {
+                        Text("Choose city").tag("")
+                        ForEach(SpotlyCountryCatalog.definition(for: country).cities) { item in Text(item.name).tag(item.name) }
+                    }
+                }
+                Text("Country and city drive location, phone, timezone and currency context. Service availability is controlled separately.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if let errorMessage { Section { Text(errorMessage).foregroundStyle(.red) } }
@@ -134,13 +145,14 @@ struct ProfileEditorView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save") { Task { await save() } }.disabled(saving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Save") { Task { await save() } }.disabled(saving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || country == nil || city.isEmpty)
             }
         }
         .onAppear {
             name = appState.currentUser?.name ?? appState.guestProfileName
             phone = appState.currentUser?.phone ?? ""
-            city = appState.currentUser?.location.nilIfBlank ?? appState.selectedCity
+            country = appState.selectedCountryCode
+            city = appState.currentUser?.preferredCity.nilIfBlank ?? appState.currentUser?.location.nilIfBlank ?? appState.selectedCity
         }
     }
 
@@ -150,9 +162,11 @@ struct ProfileEditorView: View {
         do {
             if let user = appState.currentUser, appState.isAuthenticated {
                 guard let token = try await SessionController.shared.validIDToken() else { throw SpotlyAPIError.unauthenticated }
-                try await FirestoreREST.shared.updateUserProfile(uid: user.id, displayName: name, phone: phone, city: city, token: token)
+                guard let country else { throw NSError(domain: "SpotlyCountry", code: 2, userInfo: [NSLocalizedDescriptionKey: "Choose your country before saving."]) }
+                try await FirestoreREST.shared.updateUserProfile(uid: user.id, displayName: name, phone: phone, country: country, city: city, token: token)
             }
-            appState.completeProfile(name: name, phone: phone, city: city)
+            guard let country else { throw NSError(domain: "SpotlyCountry", code: 2, userInfo: [NSLocalizedDescriptionKey: "Choose your country before saving."]) }
+            appState.completeProfile(name: name, phone: phone, country: country, city: city)
             dismiss()
         } catch { errorMessage = error.localizedDescription }
     }

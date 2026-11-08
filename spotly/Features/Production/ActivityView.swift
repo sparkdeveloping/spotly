@@ -72,7 +72,7 @@ private struct ActivityRow: View {
                 if let date = record.scheduledAt ?? record.createdAt { Text(date, style: .date).font(.caption).foregroundStyle(.secondary) }
                 if !record.subtitle.isEmpty { Text(record.subtitle).font(.caption).foregroundStyle(.secondary) }
                 SpotlyStatusPill(text: record.attentionReason ?? record.state, color: record.section == .attention ? SpotlyColors.warning : tint)
-                if let total = record.total { Text(money(total, currency: record.currency)).font(.subheadline.bold()).foregroundStyle(.primary) }
+                if let total = record.total, let currency = record.currency { Text(money(total, currency: currency.rawValue)).font(.subheadline.bold()).foregroundStyle(.primary) }
                 if record.section == .attention { Label(record.actionTitle, systemImage: "chevron.right").font(.subheadline.bold()).foregroundStyle(tint) }
             }
         }
@@ -85,7 +85,8 @@ private struct ActivityRow: View {
         case .ride: return SpotlyServiceKind.ride.tint
         case .send: return SpotlyServiceKind.send.tint
         case .ticket: return SpotlyServiceKind.events.tint
-        case .appointment, .booking: return SpotlyServiceKind.book.tint
+        case .appointment, .booking, .assistBooking: return SpotlyServiceKind.book.tint
+        case .assistShopping: return record.service?.tint ?? SpotlyServiceKind.shop.tint
         case .order: return SpotlyColors.accent
         }
     }

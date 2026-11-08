@@ -124,14 +124,14 @@ final class MarketplaceStore {
         return try await api.get("/api/public/marketplace/business", query: [URLQueryItem(name: "businessId", value: id)])
     }
 
-    func geocode(_ text: String, city: String) async throws -> [GeocodeResult] {
+    func geocode(_ text: String, city: String, country: SpotlyCountryCode) async throws -> [GeocodeResult] {
         guard text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3 else { return [] }
         // Native location search is primary; Spotly's existing licensed web
         // provider is retained for cities with limited Apple Maps coverage.
-        if let results = try? await NativeLocationSearch.search(text, city: city), !results.isEmpty {
+        if let results = try? await NativeLocationSearch.search(text, city: city, country: country), !results.isEmpty {
             return results
         }
-        let response: GeocodeResponse = try await api.get("/api/public/geocode", query: [URLQueryItem(name: "q", value: text), URLQueryItem(name: "city", value: city)])
+        let response: GeocodeResponse = try await api.get("/api/public/geocode", query: [URLQueryItem(name: "q", value: text), URLQueryItem(name: "city", value: city), URLQueryItem(name: "country", value: country.rawValue)])
         return response.results
     }
 

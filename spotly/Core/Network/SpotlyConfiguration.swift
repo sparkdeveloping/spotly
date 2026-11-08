@@ -13,6 +13,8 @@ nonisolated enum SpotlyConfiguration {
     static let firebaseIOSAppID = "1:14197555543:ios:236ea2214ec0f9d1c3be12"
     static let firebaseMessagingSenderID = "14197555543"
     static let firebaseStorageBucket = "spotly-africa.firebasestorage.app"
+    static let firebaseFunctionsRegion = "europe-west1"
+    static let firebaseDatabaseURL = "https://spotly-africa-default-rtdb.europe-west1.firebasedatabase.app"
     static let supportEmail = "spotlyafrica@gmail.com"
     static let websiteURL = URL(string: "https://spotlyafrica.com")!
     static let privacyURL = URL(string: "https://spotlyafrica.com/privacy")!

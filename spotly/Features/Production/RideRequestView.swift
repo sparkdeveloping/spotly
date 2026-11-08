@@ -69,7 +69,7 @@ struct RideRequestView: View {
     private var routeCard: some View {
         VStack(spacing: 0) {
             NavigationLink {
-                AddressPickerView(city: appState.selectedCity, selectedPoint: $pickup, selectedLabel: $pickupLabel)
+                AddressPickerView(country: appState.selectedCountryCode, city: appState.selectedCity, selectedPoint: $pickup, selectedLabel: $pickupLabel)
             } label: {
                 routeRow(icon: "circle.fill", title: "Pickup", value: pickupLabel.isEmpty ? "Choose pickup" : pickupLabel, color: SpotlyColors.success)
             }
@@ -78,7 +78,7 @@ struct RideRequestView: View {
             Divider().padding(.leading, 52)
 
             NavigationLink {
-                AddressPickerView(city: appState.selectedCity, selectedPoint: $dropoff, selectedLabel: $dropoffLabel)
+                AddressPickerView(country: appState.selectedCountryCode, city: appState.selectedCity, selectedPoint: $dropoff, selectedLabel: $dropoffLabel)
             } label: {
                 routeRow(icon: "mappin.circle.fill", title: "Destination", value: dropoffLabel.isEmpty ? "Where to?" : dropoffLabel, color: SpotlyServiceKind.ride.tint)
             }
@@ -253,7 +253,7 @@ struct RideRequestView: View {
         }
         guard !isRequesting, !isQuoting, !requestOutcomeUncertain, createdRideID == nil,
               let intent = currentQuoteIntent, lastQuotedIntent == intent,
-              quoteResponse != nil else {
+              let quote = quoteResponse?.quote else {
             errorMessage = "Your route changed. Refresh your fare before requesting."
             return
         }
@@ -262,7 +262,7 @@ struct RideRequestView: View {
         do {
             let response = try await SpotlyRideService.shared.request(
                 pickup: intent.pickup, dropoff: intent.dropoff, serviceType: intent.serviceType,
-                paymentMethod: paymentMethod, riderName: appState.currentUser?.name,
+                paymentMethod: paymentMethod, quote: quote, riderName: appState.currentUser?.name,
                 riderPhone: appState.currentUser?.phone, note: note.nilIfBlank)
             // A successful POST means the ride exists; a failed detail fetch must
             // not return to the request form and allow another ride to be created.
@@ -302,7 +302,9 @@ struct RideRequestView: View {
     private func useCurrentLocation() async {
         do {
             let location = try await appState.locationService.currentLocation()
-            pickup = RidePoint(lat: location.coordinate.latitude, lng: location.coordinate.longitude, accuracy: location.horizontalAccuracy, label: "Current location", formattedAddress: "Current location", area: nil, city: appState.selectedCity)
+            guard let selectedCountry = appState.selectedCountryCode else { throw NSError(domain: "SpotlyCountry", code: 4, userInfo: [NSLocalizedDescriptionKey: "Choose your country before requesting a ride."]) }
+            guard SpotlyCountryEngine.country(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude) == selectedCountry else { throw NSError(domain: "SpotlyCountry", code: 5, userInfo: [NSLocalizedDescriptionKey: "Your current location is outside the selected Spotly country. Switch country first."]) }
+            pickup = RidePoint(lat: location.coordinate.latitude, lng: location.coordinate.longitude, accuracy: location.horizontalAccuracy, country: selectedCountry, label: "Current location", formattedAddress: "Current location", area: nil, city: appState.selectedCity)
             pickupLabel = "Current location"
         } catch { errorMessage = error.localizedDescription }
     }

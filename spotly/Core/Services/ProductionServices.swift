@@ -55,11 +55,24 @@ actor SpotlyRideService {
     private let api = APIClient.shared
 
     func quote(pickup: RidePoint, dropoff: RidePoint, serviceType: String) async throws -> RideQuoteResponse {
-        try await api.post("/api/customer/rides/quote", body: RideQuoteRequest(pickup: pickup, dropoff: dropoff, serviceType: serviceType), authenticated: false)
+        guard let service = SpotlyRideServiceTypeID(rawValue: serviceType) else {
+            throw SpotlyAPIError.server(status: 422, message: "That Ride service type is not supported by this app version.")
+        }
+        return try await api.post("/api/customer/rides/quote", body: RideQuoteRequest(pickup: pickup, dropoff: dropoff, serviceType: service), authenticated: false)
     }
 
-    func request(pickup: RidePoint, dropoff: RidePoint, serviceType: String, paymentMethod: String, riderName: String?, riderPhone: String?, note: String?) async throws -> RideRequestResponse {
-        try await api.post("/api/customer/rides", body: RideRequestBody(pickup: pickup, dropoff: dropoff, serviceType: serviceType, paymentMethod: paymentMethod, riderName: riderName, riderPhone: riderPhone, note: note), authenticated: true)
+    func request(pickup: RidePoint, dropoff: RidePoint, serviceType: String, paymentMethod: String, quote: RideQuote, riderName: String?, riderPhone: String?, note: String?) async throws -> RideRequestResponse {
+        guard let service = SpotlyRideServiceTypeID(rawValue: serviceType),
+              let payment = SpotlyPaymentMethod(rawValue: paymentMethod),
+              let currency = SpotlyCurrencyCode(rawValue: quote.currency) else {
+            throw SpotlyAPIError.server(status: 422, message: "The Ride quote is not compatible with this app version.")
+        }
+        let body = RideRequestBody(
+            pickup: pickup, dropoff: dropoff, serviceType: service, paymentMethod: payment,
+            quotedTotal: quote.total, quotedCurrency: currency,
+            riderName: riderName, riderPhone: riderPhone, note: note
+        )
+        return try await api.post("/api/customer/rides", body: body, authenticated: true)
     }
 }
 
@@ -68,7 +81,10 @@ actor SpotlySendService {
     private let api = APIClient.shared
 
     func quote(pickup: RidePoint, dropoff: RidePoint, parcelSize: String) async throws -> ParcelQuoteResponse {
-        try await api.post("/api/customer/parcels/quote", body: ParcelQuoteRequest(pickup: pickup, dropoff: dropoff, parcelSize: parcelSize), authenticated: false)
+        guard let size = SpotlyParcelSize(rawValue: parcelSize) else {
+            throw SpotlyAPIError.server(status: 422, message: "That parcel size is not supported by this app version.")
+        }
+        return try await api.post("/api/customer/parcels/quote", body: ParcelQuoteRequest(pickup: pickup, dropoff: dropoff, parcelSize: size), authenticated: false)
     }
 
     func request(_ body: ParcelRequestBody) async throws -> ParcelRequestResponse {

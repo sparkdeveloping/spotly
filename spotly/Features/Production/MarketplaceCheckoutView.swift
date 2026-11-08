@@ -168,7 +168,7 @@ struct MarketplaceCheckoutView: View {
                 }
             } else {
                 NavigationLink {
-                    AddressPickerView(city: appState.selectedCity, selectedPoint: $deliveryPoint, selectedLabel: $deliveryAddress)
+                    AddressPickerView(country: appState.selectedCountryCode, city: appState.selectedCity, selectedPoint: $deliveryPoint, selectedLabel: $deliveryAddress)
                 } label: {
                     LabeledContent("Deliver to") {
                         Text(deliveryAddress.isEmpty ? "Choose address" : deliveryAddress).lineLimit(2).foregroundStyle(deliveryAddress.isEmpty ? SpotlyColors.accent : SpotlyColors.textSecondary)
@@ -194,7 +194,7 @@ struct MarketplaceCheckoutView: View {
                     .environment(\.timeZone, bookingTimeZone)
                 DatePicker("Preferred time", selection: $appointmentTime, displayedComponents: .hourAndMinute)
                     .environment(\.timeZone, bookingTimeZone)
-                Text("Dates and times are in Zimbabwe time (CAT, UTC+2).")
+                Text("Dates and times use \(appState.selectedCountry?.name ?? "the selected country") local time.")
                     .font(SpotlyFont.caption()).foregroundStyle(SpotlyColors.textSecondary)
                 Text("The business will review the request. Spotly will not label it confirmed until the backend confirms it.")
                     .font(SpotlyFont.caption()).foregroundStyle(SpotlyColors.textSecondary)
@@ -206,7 +206,7 @@ struct MarketplaceCheckoutView: View {
                 DatePicker("End", selection: $bookingEnd, in: bookingStart..., displayedComponents: .date)
                     .environment(\.timeZone, bookingTimeZone)
                 Stepper("\(guests) guest\(guests == 1 ? "" : "s")", value: $guests, in: 1...30)
-                Text("Booking dates use Zimbabwe time (CAT, UTC+2).")
+                Text("Booking dates use \(appState.selectedCountry?.name ?? "the selected country") local time.")
                     .font(SpotlyFont.caption()).foregroundStyle(SpotlyColors.textSecondary)
             }
         case .order:
@@ -323,6 +323,10 @@ struct MarketplaceCheckoutView: View {
     }
 
     private func submitOrder(_ detail: BusinessDetailResponse) async throws {
+        guard let contractCurrency = SpotlyCurrencyCode(rawValue: currency),
+              let contractPayment = SpotlyPaymentMethod(rawValue: paymentMethod) else {
+            throw SpotlyAPIError.server(status: 422, message: "This checkout uses a currency or payment method not supported by this app version.")
+        }
         let pickup: CommerceOrderCreateBody.Pickup?
         let delivery: CommerceOrderCreateBody.Delivery?
         if fulfilment == "pickup" {
@@ -339,9 +343,9 @@ struct MarketplaceCheckoutView: View {
             businessId: detail.business.id,
             branchId: selectedBranchID,
             items: [.init(productId: item.id, quantity: quantity)],
-            currency: currency,
+            currency: contractCurrency,
             promoCode: promoCode.nilIfBlank,
-            paymentMethod: paymentMethod,
+            paymentMethod: contractPayment,
             fulfilment: fulfilment,
             delivery: delivery,
             pickup: pickup
@@ -355,20 +359,24 @@ struct MarketplaceCheckoutView: View {
     }
 
     private func submitTransaction(_ detail: BusinessDetailResponse) async throws {
+        guard let contractCurrency = SpotlyCurrencyCode(rawValue: currency),
+              let contractPayment = SpotlyPaymentMethod(rawValue: paymentMethod) else {
+            throw SpotlyAPIError.server(status: 422, message: "This transaction uses a currency or payment method not supported by this app version.")
+        }
         let kind = transactionKind
         let appointment: CustomerTransactionCreateBody.Appointment? = kind == .appointment
-            ? .init(date: isoDay(appointmentDate), time: isoTime(appointmentTime), staffPreference: nil) : nil
+            ? .init(date: isoDay(appointmentDate, timeZone: bookingTimeZone), time: isoTime(appointmentTime, timeZone: bookingTimeZone), staffPreference: nil) : nil
         let booking: CustomerTransactionCreateBody.Booking? = kind == .booking
-            ? .init(startDate: isoDay(bookingStart), endDate: isoDay(bookingEnd), guests: guests) : nil
+            ? .init(startDate: isoDay(bookingStart, timeZone: bookingTimeZone), endDate: isoDay(bookingEnd, timeZone: bookingTimeZone), guests: guests) : nil
         let body = CustomerTransactionCreateBody(
             checkoutId: checkoutID,
             businessId: detail.business.id,
             branchId: selectedBranchID,
             itemId: item.id,
             quantity: kind == .ticket ? quantity : 1,
-            currency: currency,
+            currency: contractCurrency,
             promoCode: promoCode.nilIfBlank,
-            paymentMethod: paymentMethod,
+            paymentMethod: contractPayment,
             contactName: contactName,
             contactPhone: contactPhone,
             notes: notes.nilIfBlank,
@@ -442,8 +450,8 @@ struct MarketplaceCheckoutView: View {
         let stock = item.stockQuantity.map { Int(max(0, min($0, Double(Int32.max)))) } ?? 20
         return max(1, min(item.maxQuantity ?? 20, stock, 20))
     }
-    private var currency: String { item.currencyFor("USD") }
-    private var bookingTimeZone: TimeZone { TimeZone(identifier: "Africa/Harare") ?? .current }
+    private var currency: String { item.currencyFor(appState.selectedCountry?.currencyPriority.first?.rawValue ?? "USD") }
+    private var bookingTimeZone: TimeZone { TimeZone(identifier: appState.selectedCountry?.timeZone ?? "UTC") ?? .current }
     private var transactionKind: CheckoutKind { detail.map { transactionKindFor($0.business) } ?? (service == .events ? .ticket : service == .book ? .appointment : .order) }
     private var ticketLimit: Int { max(1, min(item.maxQuantity ?? item.remainingCapacity ?? 10, item.remainingCapacity ?? 10, 20)) }
     private var paymentMethods: [String] {
@@ -548,6 +556,7 @@ private struct CheckoutSuccessView: View {
 }
 
 struct AddressPickerView: View {
+    let country: SpotlyCountryCode?
     let city: String
     @Binding var selectedPoint: RidePoint?
     @Binding var selectedLabel: String
@@ -652,7 +661,8 @@ struct AddressPickerView: View {
         searchTask = Task {
             do {
                 if !immediate { try await Task.sleep(for: .milliseconds(300)) }
-                let matches = try await appState.marketplace.geocode(clean, city: city)
+                guard let country else { throw NSError(domain: "SpotlyCountry", code: 3, userInfo: [NSLocalizedDescriptionKey: "Choose your country before searching for an address."]) }
+                let matches = try await appState.marketplace.geocode(clean, city: city, country: country)
                 try Task.checkCancellation()
                 guard clean == cleanQuery else { return }
                 results = matches
@@ -673,10 +683,19 @@ struct AddressPickerView: View {
         defer { isLocating = false }
         do {
             let snapshot = try await appState.locationService.currentLocation()
+            guard let selectedCountry = country else {
+                locationMessage = "Choose your country before using current location."; return
+            }
+            guard let detectedCountry = SpotlyCountryEngine.country(latitude: snapshot.coordinate.latitude, longitude: snapshot.coordinate.longitude), detectedCountry == selectedCountry else {
+                let detectedName = SpotlyCountryEngine.country(latitude: snapshot.coordinate.latitude, longitude: snapshot.coordinate.longitude).flatMap { SpotlyCountryEngine.definition(for: $0)?.name }
+                locationMessage = detectedName.map { "Your current location is in \($0). Switch Spotly country before using this address." } ?? "This location is outside the selected Spotly country."
+                return
+            }
             let point = RidePoint(
                 lat: snapshot.coordinate.latitude,
                 lng: snapshot.coordinate.longitude,
                 accuracy: snapshot.horizontalAccuracy,
+                country: selectedCountry,
                 label: "Current location",
                 formattedAddress: "Current location",
                 area: nil,
@@ -701,11 +720,11 @@ struct AddressPickerView: View {
     }
 }
 
-private func isoDay(_ date: Date) -> String {
-    let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.calendar = Calendar(identifier: .gregorian); f.timeZone = TimeZone(identifier: "Africa/Harare"); f.dateFormat = "yyyy-MM-dd"; return f.string(from: date)
+private func isoDay(_ date: Date, timeZone: TimeZone) -> String {
+    let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.calendar = Calendar(identifier: .gregorian); f.timeZone = timeZone; f.dateFormat = "yyyy-MM-dd"; return f.string(from: date)
 }
-private func isoTime(_ date: Date) -> String {
-    let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "Africa/Harare"); f.dateFormat = "HH:mm"; return f.string(from: date)
+private func isoTime(_ date: Date, timeZone: TimeZone) -> String {
+    let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = timeZone; f.dateFormat = "HH:mm"; return f.string(from: date)
 }
 extension String {
     nonisolated var nilIfBlank: String? { let value = trimmingCharacters(in: .whitespacesAndNewlines); return value.isEmpty ? nil : value }

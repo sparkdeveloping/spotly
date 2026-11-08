@@ -30,9 +30,20 @@ final class AppState {
         }
     }
 
-    var selectedCity: String = UserDefaults.standard.string(forKey: "selectedCity") ?? "Harare" {
+    var preferredCountryCode: SpotlyCountryCode? = UserDefaults.standard.string(forKey: "spotly.country.code").flatMap(SpotlyCountryCode.init(rawValue:)) {
+        didSet {
+            if let preferredCountryCode { UserDefaults.standard.set(preferredCountryCode.rawValue, forKey: "spotly.country.code") }
+            else { UserDefaults.standard.removeObject(forKey: "spotly.country.code") }
+        }
+    }
+    var countryOverrideCode: SpotlyCountryCode?
+    var selectedCity: String = UserDefaults.standard.string(forKey: "selectedCity") ?? "" {
         didSet { UserDefaults.standard.set(selectedCity, forKey: "selectedCity") }
     }
+
+    var selectedCountryCode: SpotlyCountryCode? { countryOverrideCode ?? currentUser?.effectiveCountryCode ?? preferredCountryCode }
+    var selectedCountry: SpotlyCountryDefinition? { SpotlyCountryEngine.definition(for: selectedCountryCode) }
+    var availableCities: [SpotlyCountryCity] { selectedCountry?.cities ?? [] }
 
     var guestProfileName: String = UserDefaults.standard.string(forKey: "guestProfileName") ?? "Guest" {
         didSet { UserDefaults.standard.set(guestProfileName, forKey: "guestProfileName") }
@@ -91,7 +102,7 @@ final class AppState {
             authState = .authenticated
             isGuestMode = false
             hasCompletedEntryFlow = true
-            if let city = restored.location.nilIfBlank { selectedCity = city }
+            applyCountryContext(from: restored)
             // Open the main interface using the locally restored Firebase
             // identity. On slow networks, Saved/Activity/profile/FCM may take
             // several seconds; none should keep the launch screen visible.
@@ -108,7 +119,7 @@ final class AppState {
                 guard !Task.isCancelled, self.currentUser?.id == restored.id else { return }
                 if let updated {
                     self.currentUser = updated
-                    if let city = updated.location.nilIfBlank { self.selectedCity = city }
+                    self.applyCountryContext(from: updated)
                 }
             }
             return
@@ -121,8 +132,9 @@ final class AppState {
         isBootstrapping = false
     }
 
-    func completeProfile(name: String, phone: String, city: String) {
+    func completeProfile(name: String, phone: String, country: SpotlyCountryCode, city: String) {
         let cleanedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        preferredCountryCode = country
         selectedCity = city
         if isGuestMode {
             guestProfileName = cleanedName.isEmpty ? "Guest" : cleanedName
@@ -133,7 +145,28 @@ final class AppState {
             }
             currentUser?.phone = phone
             currentUser?.location = city
+            currentUser?.countryCode = country
+            currentUser?.countrySource = "manual"
+            currentUser?.preferredCity = city
         }
+    }
+
+    func setCountryPreference(_ country: SpotlyCountryCode, city: String = "") {
+        guard countryOverrideCode == nil else { return }
+        let changed = preferredCountryCode != country
+        preferredCountryCode = country
+        if changed { selectedCity = city } else if !city.isEmpty { selectedCity = city }
+        if currentUser != nil {
+            currentUser?.countryCode = country
+            currentUser?.countrySource = "manual"
+            if !city.isEmpty { currentUser?.preferredCity = city; currentUser?.location = city }
+        }
+    }
+
+    func applyCountryContext(from user: SpotlyUser) {
+        countryOverrideCode = user.countryOverrideCode
+        if let code = user.countryCode { preferredCountryCode = code }
+        if let city = user.preferredCity.nilIfBlank ?? user.location.nilIfBlank { selectedCity = city }
     }
 
     func resetOnboarding() { hasSeenOnboarding = false }
