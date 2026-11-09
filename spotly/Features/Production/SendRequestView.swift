@@ -32,6 +32,7 @@ struct SendRequestView: View {
     @State private var paymentIssue: String?
     @State private var quoteGeneration = UUID()
     @State private var lastQuotedIntent: SendQuoteIntent?
+    @State private var operationsRunMessage: String?
 
     var body: some View {
         Group {
@@ -47,6 +48,8 @@ struct SendRequestView: View {
                     }
             } else if let createdParcelID {
                 pendingParcel(id: createdParcelID)
+            } else if let decision = appState.serviceDecision(for: .send), !decision.discoverable && !appState.operationsContext(for: .send).servicePreview {
+                serviceUnavailable(decision)
             } else {
                 Form {
                     Section {
@@ -83,6 +86,19 @@ struct SendRequestView: View {
                         Section {
                             Label("Choose pickup and drop-off to continue", systemImage: "arrow.triangle.turn.up.right.diamond")
                                 .foregroundStyle(SpotlyColors.textSecondary)
+                        }
+                    }
+
+                    if pickup != nil && dropoff != nil && appState.operationsContext(for: .send).serviceOperations {
+                        Section("Operations mode") {
+                            Text("Validates the real Send route and pricing into an isolated Operations run. It does not create a production parcel, payment, Driver earnings or settlement.")
+                                .font(SpotlyFont.caption()).foregroundStyle(SpotlyColors.textSecondary)
+                            if appState.operationsContext(for: .send).locationOverride {
+                                Label("Location override grant active", systemImage: "location.fill")
+                                    .foregroundStyle(SpotlyColors.accent)
+                            }
+                            if let operationsRunMessage { Text(operationsRunMessage).font(SpotlyFont.caption()) }
+                            Button("Create isolated Send run") { Task { await createOperationsSend() } }
                         }
                     }
 
@@ -130,6 +146,13 @@ struct SendRequestView: View {
                         }
                     }
 
+                    if quoteResponse?.bookingAvailable == false {
+                        Section("Availability") {
+                            Label(quoteResponse?.bookingReason?.nilIfBlank ?? "Send requests are not open here yet. You can still preview delivery pricing.", systemImage: "info.circle.fill")
+                                .foregroundStyle(SpotlyColors.textSecondary)
+                        }
+                    }
+
                     if let errorMessage {
                         Section {
                             Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -150,7 +173,7 @@ struct SendRequestView: View {
                             HStack { Spacer(); if isRequesting { ProgressView().tint(.white) } else { Text(appState.isAuthenticated ? "Request courier" : "Sign in to request").font(SpotlyFont.headline(.bold)) }; Spacer() }
                         }
                         .listRowBackground(SpotlyServiceKind.send.tint).foregroundStyle(.white)
-                        .disabled(isRequesting || isQuoting || requestOutcomeUncertain || quoteResponse == nil || lastQuotedIntent != currentQuoteIntent || !acknowledged)
+                        .disabled(isRequesting || isQuoting || requestOutcomeUncertain || quoteResponse == nil || lastQuotedIntent != currentQuoteIntent || !acknowledged || quoteResponse?.bookingAvailable == false)
                     }
                 }
                 .scrollContentBackground(.hidden)
@@ -159,12 +182,24 @@ struct SendRequestView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar(.hidden, for: .tabBar)
                 .task {
+                    await appState.refreshServiceAvailability()
+                    await appState.refreshOperationsContext(for: .send)
                     senderName = appState.currentUser?.name ?? ""
                     senderPhone = appState.currentUser?.phone ?? ""
                     if let active = appState.activity.activeParcel { createdParcel = active }
                 }
             }
         }
+    }
+
+
+    private func serviceUnavailable(_ decision: SpotlyServiceAvailabilityDecision) -> some View {
+        ContentUnavailableView {
+            Label(decision.state == .preview ? "Spotly Send is coming soon" : "Spotly Send is unavailable", systemImage: "shippingbox.fill")
+        } description: {
+            Text(decision.reason.nilIfBlank ?? (decision.state == .preview ? "Send is visible here while we prepare service for your city." : "Send is not available for new discovery in your city right now."))
+        }
+        .task { await appState.refreshServiceAvailability() }
     }
 
     private var parcelSizes: [String] {
@@ -186,6 +221,15 @@ struct SendRequestView: View {
         quoteResponse = nil
         lastQuotedIntent = nil
         errorMessage = nil
+        guard appState.serviceIsDiscoverable(.send) else {
+            if appState.operationsContext(for: .send).serviceOperations {
+                errorMessage = nil
+            } else {
+                errorMessage = "Spotly Send is not available for delivery discovery in this city yet."
+            }
+            isQuoting = false
+            return
+        }
         guard let intent = currentQuoteIntent else { isQuoting = false; return }
         isQuoting = true
         defer { if quoteGeneration == generation { isQuoting = false } }
@@ -204,8 +248,25 @@ struct SendRequestView: View {
         }
     }
 
+    private func createOperationsSend() async {
+        guard appState.isAuthenticated, let pickup, let dropoff else { return }
+        isRequesting = true
+        errorMessage = nil
+        defer { isRequesting = false }
+        do {
+            let result = try await SpotlyOperationsService.shared.createSend(pickup: pickup, dropoff: dropoff, parcelSize: parcelSize)
+            operationsRunMessage = "Operations run \(result.runId) · \(result.state). Production Send and money records were not created."
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func requestSend() async {
         guard appState.isAuthenticated else { appState.hasCompletedEntryFlow = false; appState.isGuestMode = false; return }
+        guard quoteResponse?.bookingAvailable != false else {
+            errorMessage = quoteResponse?.bookingReason?.nilIfBlank ?? "Send requests are not open here right now."
+            return
+        }
         guard !isRequesting, !isQuoting, !requestOutcomeUncertain, createdParcelID == nil,
               let intent = currentQuoteIntent, lastQuotedIntent == intent,
               let quote = quoteResponse?.quote else {

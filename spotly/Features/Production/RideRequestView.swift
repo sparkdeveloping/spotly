@@ -20,6 +20,7 @@ struct RideRequestView: View {
     @State private var requestOutcomeUncertain = false
     @State private var quoteGeneration = UUID()
     @State private var lastQuotedIntent: RideQuoteIntent?
+    @State private var operationsRunMessage: String?
 
     var body: some View {
         Group {
@@ -27,12 +28,17 @@ struct RideRequestView: View {
                 RideTrackingView(initialRide: createdRide)
             } else if let createdRideID {
                 pendingRide(id: createdRideID)
+            } else if let decision = appState.serviceDecision(for: .ride), !decision.discoverable && !appState.operationsContext(for: .ride).servicePreview {
+                serviceUnavailable(decision)
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
                         hero
                         routeCard
-                        if pickup != nil && dropoff != nil { quoteSection }
+                        if pickup != nil && dropoff != nil {
+                            if appState.operationsContext(for: .ride).serviceOperations { operationsCard }
+                            quoteSection
+                        }
                         if let errorMessage, quoteResponse == nil, !isQuoting {
                             Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                                 .font(SpotlyFont.callout()).foregroundStyle(SpotlyColors.error)
@@ -54,8 +60,20 @@ struct RideRequestView: View {
             }
         }
         .task {
+            await appState.refreshServiceAvailability()
+            await appState.refreshOperationsContext(for: .ride)
             if let active = appState.activity.activeRide { createdRide = active }
         }
+    }
+
+
+    private func serviceUnavailable(_ decision: SpotlyServiceAvailabilityDecision) -> some View {
+        ContentUnavailableView {
+            Label(decision.state == .preview ? "Spotly Ride is coming soon" : "Spotly Ride is unavailable", systemImage: "car.fill")
+        } description: {
+            Text(decision.reason.nilIfBlank ?? (decision.state == .preview ? "Ride is visible here while we prepare service for your city." : "Ride is not available for new discovery in your city right now."))
+        }
+        .task { await appState.refreshServiceAvailability() }
     }
 
     private var hero: some View {
@@ -179,6 +197,14 @@ struct RideRequestView: View {
                 TextField("Note for your driver (optional)", text: $note, axis: .vertical)
                     .textFieldStyle(.roundedBorder).lineLimit(2...4)
 
+                if response.bookingAvailable == false {
+                    Label(response.bookingReason?.nilIfBlank ?? "Ride requests are not open here yet. You can still preview fares.", systemImage: "info.circle.fill")
+                        .font(SpotlyFont.callout())
+                        .foregroundStyle(SpotlyColors.textSecondary)
+                        .padding(12)
+                        .background(SpotlyColors.secondaryBackground, in: RoundedRectangle(cornerRadius: 14))
+                }
+
                 if let errorMessage {
                     Label(errorMessage, systemImage: "exclamationmark.triangle.fill").foregroundStyle(SpotlyColors.error).font(SpotlyFont.callout())
                 }
@@ -187,7 +213,7 @@ struct RideRequestView: View {
                     HStack { Spacer(); if isRequesting { ProgressView().tint(.white) } else { Text(appState.isAuthenticated ? "Request \(response.quote.serviceLabel)" : "Sign in to request").font(SpotlyFont.headline(.bold)) }; Spacer() }
                         .frame(height: 52).background(SpotlyServiceKind.ride.tint, in: RoundedRectangle(cornerRadius: 16))
                 }
-                .buttonStyle(.plain).foregroundStyle(.white).disabled(isRequesting || isQuoting || requestOutcomeUncertain || lastQuotedIntent != currentQuoteIntent)
+                .buttonStyle(.plain).foregroundStyle(.white).disabled(isRequesting || isQuoting || requestOutcomeUncertain || lastQuotedIntent != currentQuoteIntent || response.bookingAvailable == false)
             }
         }
     }
@@ -202,6 +228,27 @@ struct RideRequestView: View {
             Text(paymentMethod == "cash" ? "Cash is collected by your driver at drop-off." : "Paynow rides are paid from Activity according to the server payment state.")
                 .font(SpotlyFont.caption()).foregroundStyle(SpotlyColors.textSecondary)
         }
+    }
+
+    private var operationsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Operations mode", systemImage: "wrench.and.screwdriver.fill")
+                .font(SpotlyFont.headline()).foregroundStyle(SpotlyColors.accent)
+            Text("Uses the real Ride route and pricing inputs, but writes only an isolated Operations run. No production trip, payment, Driver earnings or settlement is created.")
+                .font(SpotlyFont.caption()).foregroundStyle(SpotlyColors.textSecondary)
+            if appState.operationsContext(for: .ride).locationOverride {
+                Text("Location override grant active for this account scope.")
+                    .font(SpotlyFont.caption(.semibold)).foregroundStyle(SpotlyColors.accent)
+            }
+            if let operationsRunMessage {
+                Text(operationsRunMessage).font(SpotlyFont.caption()).foregroundStyle(SpotlyColors.textSecondary)
+            }
+            Button("Create isolated Ride run") { Task { await createOperationsRide() } }
+                .buttonStyle(.borderedProminent)
+                .disabled(isRequesting || pickup == nil || dropoff == nil)
+        }
+        .padding(15)
+        .background(SpotlyColors.secondaryBackground, in: RoundedRectangle(cornerRadius: 18))
     }
 
     private var safetyNote: some View {
@@ -229,6 +276,15 @@ struct RideRequestView: View {
         lastQuotedIntent = nil
         quoteResponse = nil
         errorMessage = nil
+        guard appState.serviceIsDiscoverable(.ride) else {
+            if appState.operationsContext(for: .ride).serviceOperations {
+                errorMessage = nil
+            } else {
+                errorMessage = "Spotly Ride is not available for fare discovery in this city yet."
+            }
+            isQuoting = false
+            return
+        }
         guard let intent = currentQuoteIntent else { isQuoting = false; return }
         isQuoting = true
         defer { if quoteGeneration == generation { isQuoting = false } }
@@ -250,6 +306,10 @@ struct RideRequestView: View {
     private func requestRide() async {
         guard appState.isAuthenticated else {
             appState.hasCompletedEntryFlow = false; appState.isGuestMode = false; return
+        }
+        guard quoteResponse?.bookingAvailable != false else {
+            errorMessage = quoteResponse?.bookingReason?.nilIfBlank ?? "Ride requests are not open here right now."
+            return
         }
         guard !isRequesting, !isQuoting, !requestOutcomeUncertain, createdRideID == nil,
               let intent = currentQuoteIntent, lastQuotedIntent == intent,
@@ -273,6 +333,19 @@ struct RideRequestView: View {
             errorMessage = requestOutcomeUncertain
                 ? "Couldn’t confirm the ride request. Check Activity before trying again. " + error.localizedDescription
                 : error.localizedDescription
+        }
+    }
+
+    private func createOperationsRide() async {
+        guard appState.isAuthenticated, let pickup, let dropoff else { return }
+        isRequesting = true
+        errorMessage = nil
+        defer { isRequesting = false }
+        do {
+            let result = try await SpotlyOperationsService.shared.createRide(pickup: pickup, dropoff: dropoff, serviceType: serviceType)
+            operationsRunMessage = "Operations run \(result.runId) · \(result.state). Production Ride and money records were not created."
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 

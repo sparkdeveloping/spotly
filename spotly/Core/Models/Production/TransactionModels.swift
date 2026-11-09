@@ -35,6 +35,9 @@ nonisolated struct RideQuoteResponse: Decodable, Sendable {
     let quote: RideQuote
     let serviceTypes: [String: RideServiceType]?
     let paymentMethods: [String]?
+    let serviceAvailability: SpotlyServiceAvailabilityDecision?
+    let bookingAvailable: Bool?
+    let bookingReason: String?
 }
 
 nonisolated struct RideServiceType: Decodable, Hashable, Sendable {
@@ -161,6 +164,9 @@ nonisolated struct ParcelQuoteResponse: Decodable, Sendable {
     let parcelSizes: [String: ParcelSizeConfiguration]?
     let paymentMethods: [String]?
     let scheduledEnabled: Bool?
+    let serviceAvailability: SpotlyServiceAvailabilityDecision?
+    let bookingAvailable: Bool?
+    let bookingReason: String?
 }
 
 nonisolated struct ParcelSizeConfiguration: Decodable, Hashable, Sendable {

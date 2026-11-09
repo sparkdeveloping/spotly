@@ -35,6 +35,7 @@ struct MarketplaceCheckoutView: View {
     @State private var isStartingPayment = false
     @State private var pickupLookupGeneration = UUID()
     @State private var checkoutID = "ios_" + UUID().uuidString.replacingOccurrences(of: "-", with: "_")
+    @State private var operationsRunMessage: String?
 
     var body: some View {
         Group {
@@ -48,10 +49,10 @@ struct MarketplaceCheckoutView: View {
                 )
             } else if isLoading {
                 ProgressView("Preparing checkout…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let detail, !detail.transactional {
+            } else if let detail, !detail.transactional && !appState.operationsContext(for: service).serviceOperations {
                 ContentUnavailableView("Booking and ordering unavailable", systemImage: "storefront", description: Text("This is a discovery listing. The business has not enabled verified transactions on Spotly yet."))
                     .padding(18)
-            } else if let detail, let reason = item.checkoutUnavailableReason(for: service) {
+            } else if let detail, let reason = item.checkoutUnavailableReason(for: service), !appState.operationsContext(for: service).serviceOperations {
                 ContentUnavailableView(reason, systemImage: "bag.badge.questionmark", description: Text("Availability may have changed. Return to the business to see current options."))
                     .padding(18)
             } else if let detail {
@@ -108,6 +109,20 @@ struct MarketplaceCheckoutView: View {
                 Section {
                     Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                         .font(SpotlyFont.callout()).foregroundStyle(SpotlyColors.error)
+                }
+            }
+
+            if transactionKind == .order && appState.operationsContext(for: service).serviceOperations {
+                Section("Operations mode") {
+                    Text("Validate this real product, location, price and payment configuration without creating a production order or touching inventory, provider funds, Driver earnings or settlement.")
+                        .font(SpotlyFont.caption()).foregroundStyle(SpotlyColors.textSecondary)
+                    if let operationsRunMessage { Text(operationsRunMessage).font(SpotlyFont.caption()) }
+                    Button("Validate isolated checkout") { Task { await runOperationsCheckout(simulatePayment: false) } }
+                        .disabled(isSubmitting || selectedBranchID.isEmpty || paymentMethod.isEmpty)
+                    if appState.operationsContext(for: service).paymentSandbox {
+                        Button("Simulate payment safely") { Task { await runOperationsCheckout(simulatePayment: true) } }
+                            .disabled(isSubmitting || selectedBranchID.isEmpty || paymentMethod.isEmpty)
+                    }
                 }
             }
 
@@ -254,6 +269,7 @@ struct MarketplaceCheckoutView: View {
         do {
             let value = try await appState.marketplace.business(id: businessID)
             detail = value
+            await appState.refreshOperationsContext(for: service)
             selectedBranchID = value.branches.first?.id ?? ""
             contactName = appState.currentUser?.name ?? ""
             contactPhone = appState.currentUser?.phone ?? ""

@@ -33,7 +33,11 @@ struct ProductionSearchView: View {
                 Task { await appState.marketplace.performSearch(query, city: appState.selectedCity, service: serviceFilter, type: typeFilter) }
             }
             .task {
-                if appState.marketplace.feeds.isEmpty { await appState.marketplace.loadHome(city: appState.selectedCity) }
+                await appState.refreshServiceAvailability()
+                if let serviceFilter, !appState.serviceIsDiscoverable(serviceFilter) { self.serviceFilter = nil }
+                if appState.marketplace.feeds.isEmpty {
+                    await appState.marketplace.loadHome(city: appState.selectedCity, services: discoverableMarketplaceServices)
+                }
             }
             .onDisappear {
                 searchTask?.cancel()
@@ -45,13 +49,17 @@ struct ProductionSearchView: View {
         SearchIntent(query: query, city: appState.selectedCity, service: serviceFilter, type: typeFilter)
     }
 
+    private var discoverableMarketplaceServices: Set<SpotlyServiceKind> {
+        Set([.eat, .shop, .book, .events].filter { appState.serviceIsDiscoverable($0) })
+    }
+
     private var filters: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 filterChip("All", selected: serviceFilter == nil && typeFilter == nil) {
                     serviceFilter = nil; typeFilter = nil
                 }
-                ForEach([SpotlyServiceKind.eat, .shop, .book, .events]) { service in
+                ForEach([SpotlyServiceKind.eat, .shop, .book, .events].filter { appState.serviceIsDiscoverable($0) }) { service in
                     filterChip(service.title, icon: service.icon, selected: serviceFilter == service) {
                         serviceFilter = serviceFilter == service ? nil : service
                         typeFilter = nil

@@ -17,7 +17,17 @@ struct ServiceDiscoveryView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 24) {
+                if let decision = appState.serviceDecision(for: service), !decision.discoverable {
+                    serviceHero
+                    ContentUnavailableView(decision.state == .preview ? "Coming soon" : "Not available here", systemImage: service.icon, description: Text(decision.reason.isEmpty ? "Spotly \(service.title) is not open for discovery in \(appState.selectedCity) yet." : decision.reason))
+                        .padding(.vertical, 30)
+                } else {
                 serviceHero
+                if appState.serviceDecision(for: service)?.paused == true {
+                    Label("This service is temporarily paused for new transactions. You can still browse what is available.", systemImage: "pause.circle.fill")
+                        .font(SpotlyFont.callout()).foregroundStyle(SpotlyColors.textSecondary)
+                        .padding(14).background(SpotlyColors.secondaryBackground, in: RoundedRectangle(cornerRadius: 16))
+                }
                 if let feed {
                     feedContent(feed)
                 } else if isLoading {
@@ -34,6 +44,7 @@ struct ServiceDiscoveryView: View {
                     Button("Load more") { request.loadMore() }.disabled(isLoading).frame(maxWidth: .infinity, minHeight: 44)
                 }
                 if isLoading && feed != nil { ProgressView("Updating…").frame(maxWidth: .infinity) }
+                }
             }
             .padding(.horizontal, 18)
             .padding(.bottom, 36)
@@ -45,9 +56,9 @@ struct ServiceDiscoveryView: View {
         .toolbarBackground(.visible, for: .navigationBar)
         .searchable(text: $query, prompt: searchPrompt)
         .onSubmit(of: .search) { Task { await reload() } }
-        .onAppear { request.load(currentIntent) }
+        .onAppear { if appState.serviceIsDiscoverable(service) { request.load(currentIntent) } }
         .onChange(of: currentIntent) { _, intent in
-            request.load(intent, debounce: intent.query.isEmpty ? .zero : .milliseconds(320))
+            if appState.serviceIsDiscoverable(service) { request.load(intent, debounce: intent.query.isEmpty ? .zero : .milliseconds(320)) }
         }
         .onDisappear { request.cancel() }
         .refreshable { await reload() }

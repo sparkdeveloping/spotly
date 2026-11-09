@@ -55,7 +55,7 @@ final class MarketplaceStore {
         searchRequest.cancel(clear: true)
     }
 
-    func loadHome(city: String, force: Bool = false) async {
+    func loadHome(city: String, services: Set<SpotlyServiceKind>? = nil, force: Bool = false) async {
         if homeCity == city, !force {
             if let homeTask, isLoadingHome { await homeTask.value; return }
             if let homeLoadedAt, Date().timeIntervalSince(homeLoadedAt) < 120, feedErrors.isEmpty { return }
@@ -65,10 +65,13 @@ final class MarketplaceStore {
         let generation = homeGeneration
         if homeCity != city { feeds = [:]; feedErrors = [:] }
         homeCity = city
-        loadingFeeds = [.eat, .shop, .book, .events]
+        let requestedServices = services ?? Set([.eat, .shop, .book, .events])
+        feeds = feeds.filter { requestedServices.contains($0.key) }
+        feedErrors = feedErrors.filter { requestedServices.contains($0.key) }
+        loadingFeeds = requestedServices
         homeTask = Task {
             await withTaskGroup(of: Void.self) { group in
-                for service in [SpotlyServiceKind.eat, .shop, .book, .events] {
+                for service in requestedServices {
                     group.addTask { await self.loadHomeFeed(service, city: city, generation: generation) }
                 }
             }

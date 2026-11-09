@@ -9,6 +9,8 @@ struct SpotlyPlatformFoundationStatus: Equatable, Sendable {
     let contractSHA256: String
     let countryContractVersion: String
     let countryContractSHA256: String
+    let serviceAvailabilityContractVersion: String
+    let serviceAvailabilityContractSHA256: String
     let capabilities: [String: Bool]
     let serverTimeMs: Double
 }
@@ -44,7 +46,9 @@ enum FirebasePlatform {
               let contractVersion = data["contractVersion"] as? String,
               let contractSHA256 = data["contractSHA256"] as? String,
               let countryContractVersion = data["countryContractVersion"] as? String,
-              let countryContractSHA256 = data["countryContractSHA256"] as? String else {
+              let countryContractSHA256 = data["countryContractSHA256"] as? String,
+              let serviceAvailabilityContractVersion = data["serviceAvailabilityContractVersion"] as? String,
+              let serviceAvailabilityContractSHA256 = data["serviceAvailabilityContractSHA256"] as? String else {
             throw NSError(domain: "SpotlyFirebasePlatform", code: 1, userInfo: [NSLocalizedDescriptionKey: "Spotly's Firebase platform returned an invalid foundation response."])
         }
         guard projectID == SpotlyConfiguration.firebaseProjectID,
@@ -52,7 +56,9 @@ enum FirebasePlatform {
               contractVersion == SpotlyContractMetadata.version,
               contractSHA256 == SpotlyContractMetadata.manifestSHA256,
               countryContractVersion == SpotlyCountryContractMetadata.version,
-              countryContractSHA256 == SpotlyCountryContractMetadata.manifestSHA256 else {
+              countryContractSHA256 == SpotlyCountryContractMetadata.manifestSHA256,
+              serviceAvailabilityContractVersion == SpotlyServiceAvailabilityContractMetadata.version,
+              serviceAvailabilityContractSHA256 == SpotlyServiceAvailabilityContractMetadata.manifestSHA256 else {
             throw NSError(domain: "SpotlyFirebasePlatform", code: 2, userInfo: [NSLocalizedDescriptionKey: "This Spotly build and Firebase platform are not compatible."])
         }
         let rawCapabilities = data["capabilities"] as? [String: Any] ?? [:]
@@ -60,7 +66,56 @@ enum FirebasePlatform {
             if let value = pair.value as? Bool { partial[pair.key] = value }
         }
         let serverTime = (data["serverTimeMs"] as? NSNumber)?.doubleValue ?? 0
-        return SpotlyPlatformFoundationStatus(projectID: projectID, functionsRegion: region, contractVersion: contractVersion, contractSHA256: contractSHA256, countryContractVersion: countryContractVersion, countryContractSHA256: countryContractSHA256, capabilities: capabilities, serverTimeMs: serverTime)
+        return SpotlyPlatformFoundationStatus(projectID: projectID, functionsRegion: region, contractVersion: contractVersion, contractSHA256: contractSHA256, countryContractVersion: countryContractVersion, countryContractSHA256: countryContractSHA256, serviceAvailabilityContractVersion: serviceAvailabilityContractVersion, serviceAvailabilityContractSHA256: serviceAvailabilityContractSHA256, capabilities: capabilities, serverTimeMs: serverTime)
+    }
+
+    static func serviceAvailability(country: SpotlyCountryCode, city: String) async throws -> [SpotlyServiceID: SpotlyServiceAvailabilityDecision] {
+        let result = try await functions().httpsCallable("serviceAvailability").call(["country": country.rawValue, "city": city])
+        guard let envelope = result.data as? [String: Any], envelope["ok"] as? Bool == true,
+              let data = envelope["data"] as? [String: Any],
+              let rows = data["services"] as? [[String: Any]] else {
+            throw NSError(domain: "SpotlyFirebasePlatform", code: 3, userInfo: [NSLocalizedDescriptionKey: "Spotly could not load service availability."])
+        }
+        var decisions: [SpotlyServiceID: SpotlyServiceAvailabilityDecision] = [:]
+        for row in rows {
+            guard let rawService = row["service"] as? String, let service = SpotlyServiceID(rawValue: rawService),
+                  let rawState = row["state"] as? String, let state = SpotlyServiceAvailabilityState(rawValue: rawState) else { continue }
+            let flags = SpotlyServiceAvailabilityCatalog.capabilities[state] ?? SpotlyServiceAvailabilityCapabilities(visible: false, discoverable: false, transactable: false, paused: false)
+            decisions[service] = SpotlyServiceAvailabilityDecision(
+                service: service, country: country, city: row["city"] as? String ?? city, state: state,
+                source: row["source"] as? String ?? "runtime", reason: row["reason"] as? String ?? "",
+                visible: row["visible"] as? Bool ?? flags.visible,
+                discoverable: row["discoverable"] as? Bool ?? flags.discoverable,
+                transactable: row["transactable"] as? Bool ?? flags.transactable,
+                paused: row["paused"] as? Bool ?? flags.paused
+            )
+        }
+        return decisions
+    }
+
+    static func operationsContext(service: SpotlyServiceID? = nil, country: SpotlyCountryCode? = nil, city: String = "") async throws -> (SpotlyOperationsContext, [SpotlyOperationGrant]) {
+        var payload: [String: Any] = [:]
+        if let service { payload["service"] = service.rawValue }
+        if let country { payload["country"] = country.rawValue }
+        if !city.isEmpty { payload["city"] = city }
+        let result = try await functions().httpsCallable("operationsContext").call(payload)
+        guard let envelope = result.data as? [String: Any], envelope["ok"] as? Bool == true,
+              let data = envelope["data"] as? [String: Any],
+              let raw = data["context"] as? [String: Any] else {
+            throw NSError(domain: "SpotlyFirebasePlatform", code: 4, userInfo: [NSLocalizedDescriptionKey: "Spotly could not load Operations grants."])
+        }
+        let context = SpotlyOperationsContext(
+            servicePreview: raw["servicePreview"] as? Bool ?? false,
+            serviceOperations: raw["serviceOperations"] as? Bool ?? false,
+            paymentSandbox: raw["paymentSandbox"] as? Bool ?? false,
+            locationOverride: raw["locationOverride"] as? Bool ?? false,
+            driverOperations: raw["driverOperations"] as? Bool ?? false
+        )
+        let grants = (data["grants"] as? [[String: Any]] ?? []).compactMap { item -> SpotlyOperationGrant? in
+            guard let id = item["id"] as? String, let rawType = item["type"] as? String, let type = SpotlyOperationGrantType(rawValue: rawType) else { return nil }
+            return SpotlyOperationGrant(id: id, type: type, services: item["services"] as? [String] ?? [], countries: item["countries"] as? [String] ?? [], cities: item["cities"] as? [String] ?? [], expiresAt: item["expiresAt"] as? String, reason: item["reason"] as? String ?? "")
+        }
+        return (context, grants)
     }
 
     private static var shouldUseEmulators: Bool {

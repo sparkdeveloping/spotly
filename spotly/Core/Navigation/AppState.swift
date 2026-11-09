@@ -44,6 +44,43 @@ final class AppState {
     var selectedCountryCode: SpotlyCountryCode? { countryOverrideCode ?? currentUser?.effectiveCountryCode ?? preferredCountryCode }
     var selectedCountry: SpotlyCountryDefinition? { SpotlyCountryEngine.definition(for: selectedCountryCode) }
     var availableCities: [SpotlyCountryCity] { selectedCountry?.cities ?? [] }
+    var serviceAvailability: [SpotlyServiceID: SpotlyServiceAvailabilityDecision] = [:]
+    var operationsContexts: [SpotlyServiceID: SpotlyOperationsContext] = [:]
+
+    func serviceDecision(for service: SpotlyServiceID) -> SpotlyServiceAvailabilityDecision? {
+        if let current = serviceAvailability[service] { return current }
+        guard let country = selectedCountryCode else { return nil }
+        return SpotlyServiceAvailabilityCatalog.decision(service: service, country: country, city: selectedCity)
+    }
+
+    func serviceIsVisible(_ service: SpotlyServiceID) -> Bool { serviceDecision(for: service)?.visible ?? true }
+    func serviceIsDiscoverable(_ service: SpotlyServiceID) -> Bool { serviceDecision(for: service)?.discoverable ?? false }
+    func serviceIsLive(_ service: SpotlyServiceID) -> Bool { serviceDecision(for: service)?.transactable ?? false }
+
+    func operationsContext(for service: SpotlyServiceID) -> SpotlyOperationsContext {
+        operationsContexts[service] ?? .empty
+    }
+
+    func refreshOperationsContext(for service: SpotlyServiceID) async {
+        guard isAuthenticated, let country = selectedCountryCode else {
+            operationsContexts[service] = .empty
+            return
+        }
+        do {
+            let value = try await FirebasePlatform.operationsContext(service: service, country: country, city: selectedCity)
+            operationsContexts[service] = value.0
+        } catch {
+            operationsContexts[service] = .empty
+        }
+    }
+
+    func refreshServiceAvailability() async {
+        guard let country = selectedCountryCode else { serviceAvailability = [:]; return }
+        do { serviceAvailability = try await FirebasePlatform.serviceAvailability(country: country, city: selectedCity) }
+        catch {
+            serviceAvailability = Dictionary(uniqueKeysWithValues: SpotlyServiceID.allCases.map { ($0, SpotlyServiceAvailabilityCatalog.decision(service: $0, country: country, city: selectedCity)) })
+        }
+    }
 
     var guestProfileName: String = UserDefaults.standard.string(forKey: "guestProfileName") ?? "Guest" {
         didSet { UserDefaults.standard.set(guestProfileName, forKey: "guestProfileName") }
@@ -90,6 +127,7 @@ final class AppState {
         marketplace.resetForAccountChange()
         marketplace.clearRecentSearches()
         notificationPreference = []
+        operationsContexts = [:]
         UserDefaults.standard.removeObject(forKey: "spotly.notification.categories")
         Task { await PushCoordinator.shared.invalidateLocalFCMTokenAfterSignOut() }
     }
@@ -103,6 +141,7 @@ final class AppState {
             isGuestMode = false
             hasCompletedEntryFlow = true
             applyCountryContext(from: restored)
+            await refreshServiceAvailability()
             // Open the main interface using the locally restored Firebase
             // identity. On slow networks, Saved/Activity/profile/FCM may take
             // several seconds; none should keep the launch screen visible.
@@ -120,6 +159,7 @@ final class AppState {
                 if let updated {
                     self.currentUser = updated
                     self.applyCountryContext(from: updated)
+                    await self.refreshServiceAvailability()
                 }
             }
             return
@@ -136,6 +176,7 @@ final class AppState {
         let cleanedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         preferredCountryCode = country
         selectedCity = city
+        Task { await refreshServiceAvailability() }
         if isGuestMode {
             guestProfileName = cleanedName.isEmpty ? "Guest" : cleanedName
         } else if currentUser != nil {
@@ -156,6 +197,7 @@ final class AppState {
         let changed = preferredCountryCode != country
         preferredCountryCode = country
         if changed { selectedCity = city } else if !city.isEmpty { selectedCity = city }
+        Task { await refreshServiceAvailability() }
         if currentUser != nil {
             currentUser?.countryCode = country
             currentUser?.countrySource = "manual"

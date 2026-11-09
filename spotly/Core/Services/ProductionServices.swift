@@ -93,6 +93,36 @@ actor SpotlySendService {
 }
 
 
+actor SpotlyOperationsService {
+    static let shared = SpotlyOperationsService()
+    private let api = APIClient.shared
+
+    func rides() async throws -> SpotlyOperationsRideListResponse {
+        try await api.get("/api/operations/rides", authenticated: true)
+    }
+
+    func createRide(pickup: RidePoint, dropoff: RidePoint, serviceType: String) async throws -> SpotlyOperationsRideMutationResponse {
+        try await api.post(
+            "/api/operations/rides",
+            body: SpotlyOperationsRideRequestBody(pickup: pickup, dropoff: dropoff, serviceType: serviceType),
+            authenticated: true
+        )
+    }
+
+    func createSend(pickup: RidePoint, dropoff: RidePoint, parcelSize: String) async throws -> SpotlyOperationsSendResponse {
+        try await api.post(
+            "/api/operations/send",
+            body: SpotlyOperationsSendRequestBody(pickup: pickup, dropoff: dropoff, parcelSize: parcelSize),
+            authenticated: true
+        )
+    }
+
+    func validateCheckout(_ body: SpotlyOperationsCheckoutRequest) async throws -> SpotlyOperationsCheckoutResponse {
+        try await api.post("/api/operations/checkout", body: body, authenticated: true)
+    }
+}
+
+
 nonisolated struct AccountDeletionRequestBody: Encodable {
     let reason: String
 }

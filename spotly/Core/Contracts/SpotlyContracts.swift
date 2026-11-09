@@ -3,7 +3,7 @@ import Foundation
 
 nonisolated enum SpotlyContractMetadata {
     static let version = "1.0.0"
-    static let manifestSHA256 = "753652a6e58d51dc05d11e10640e2b1adef67fe865e734b0c5af389ae735535a"
+    static let manifestSHA256 = "a1e3ea851048653f4be14f32024050d62af37bcee88c1055a969ffe7f76c5184"
 }
 
 nonisolated enum SpotlyServiceID: String, CaseIterable, Codable, Hashable, Sendable {
@@ -75,7 +75,6 @@ nonisolated enum SpotlyPaymentMethod: String, CaseIterable, Codable, Hashable, S
     case card = "card"
     case bankTransfer = "bank_transfer"
     case payLater = "pay_later"
-    case superadminTest = "superadmin_test"
 }
 
 nonisolated enum SpotlyPaymentState: String, CaseIterable, Codable, Hashable, Sendable {
@@ -98,7 +97,6 @@ nonisolated enum SpotlyPaymentState: String, CaseIterable, Codable, Hashable, Se
     case actionRequired = "action_required"
     case awaitingPayment = "awaiting_payment"
     case payLater = "pay_later"
-    case testPaid = "test_paid"
     case cashDriverAttested = "cash_driver_attested"
 }
 

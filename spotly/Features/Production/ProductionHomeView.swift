@@ -18,12 +18,12 @@ struct ProductionHomeView: View {
                     }
 
                     marketplaceSections
-                    ForEach([SpotlyServiceKind.eat, .shop, .book, .events]) { service in
+                    ForEach([SpotlyServiceKind.eat, .shop, .book, .events].filter { appState.serviceIsDiscoverable($0) }) { service in
                         if let error = appState.marketplace.feedErrors[service] {
                             VStack(alignment: .leading, spacing: 8) {
                                 Label("\(service.title) couldn’t update", systemImage: service.icon).font(.headline)
                                 Text(error).font(.callout).foregroundStyle(.secondary)
-                                Button("Try again") { Task { if !appState.selectedCity.isEmpty { await appState.marketplace.loadHome(city: appState.selectedCity, force: true) } } }
+                                Button("Try again") { Task { if !appState.selectedCity.isEmpty { await appState.marketplace.loadHome(city: appState.selectedCity, services: discoverableMarketplaceServices, force: true) } } }
                             }
                         }
                     }
@@ -36,14 +36,20 @@ struct ProductionHomeView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
             .refreshable {
-                if !appState.selectedCity.isEmpty { await appState.marketplace.loadHome(city: appState.selectedCity, force: true) }
+                await appState.refreshServiceAvailability()
+                if !appState.selectedCity.isEmpty { await appState.marketplace.loadHome(city: appState.selectedCity, services: discoverableMarketplaceServices, force: true) }
                 if appState.isAuthenticated { await appState.activity.load(user: appState.currentUser, force: true) }
             }
             .task(id: "\(appState.selectedCountryCode?.rawValue ?? ""):\(appState.selectedCity)") {
-                if !appState.selectedCity.isEmpty { await appState.marketplace.loadHome(city: appState.selectedCity) }
+                await appState.refreshServiceAvailability()
+                if !appState.selectedCity.isEmpty { await appState.marketplace.loadHome(city: appState.selectedCity, services: discoverableMarketplaceServices) }
                 if appState.isAuthenticated { await appState.activity.load(user: appState.currentUser) }
             }
         }
+    }
+
+    private var discoverableMarketplaceServices: Set<SpotlyServiceKind> {
+        Set([SpotlyServiceKind.eat, .shop, .book, .events].filter { appState.serviceIsDiscoverable($0) })
     }
 
     private var hero: some View {
@@ -88,7 +94,7 @@ struct ProductionHomeView: View {
                 .font(SpotlyFont.subheadline(.bold))
                 .foregroundStyle(SpotlyColors.textPrimary)
             LazyVGrid(columns: columns, spacing: 12) {
-                ForEach([SpotlyServiceKind.eat, .shop, .ride, .book, .events, .send]) { service in
+                ForEach([SpotlyServiceKind.eat, .shop, .ride, .book, .events, .send].filter { appState.serviceIsVisible($0) }) { service in
                     Group {
                         switch service {
                         case .ride:
@@ -120,7 +126,7 @@ struct ProductionHomeView: View {
             .padding(.vertical, 36)
         } else if let error = appState.marketplace.homeError, appState.marketplace.feeds.isEmpty {
             SpotlyNetworkStateView(title: "Couldn’t load Spotly", message: error, actionTitle: "Try again") {
-                Task { await appState.marketplace.loadHome(city: appState.selectedCity, force: true) }
+                Task { await appState.marketplace.loadHome(city: appState.selectedCity, services: discoverableMarketplaceServices, force: true) }
             }
         } else {
             if !verifiedHomeBusinesses.isEmpty {
