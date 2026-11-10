@@ -12,6 +12,7 @@ import {
   Compass,
   CreditCard,
   Heart,
+  GitBranch,
   House,
   LayoutDashboard,
   LifeBuoy,
@@ -21,7 +22,7 @@ import {
   Search,
   Settings,
   ShieldCheck,
-  ShoppingBag,
+  Sparkles,
   Store,
   Truck,
   UsersRound,
@@ -32,19 +33,20 @@ export const portals = {
   customer: {
     id: "customer",
     name: "Spotly",
-    label: "Customer",
-    href: "/",
-    logo: "/brand/spotly.png",
+    label: "Personal",
+    href: "https://spotlyafrica.com",
+    logo: "/api/branding/assets/primary_symbol_color.svg",
     accent: "#6657D9",
     accentStrong: "#4E3FBF",
     accentSoft: "#F0EEFF",
     darkAccent: "#9B8CFF",
-    description: "Discover, book, order, and plan your city.",
+    description: "Discover SpotlyBite, SpotlyShopper, SpotlyBook, SpotlyLive, SpotlyRide and SpotlySend in one place.",
     nav: [
-      { id: "home", label: "Home", icon: House, href: "/marketplace" },
-      { id: "search", label: "Search", icon: Search, href: "/marketplace?view=search" },
-      { id: "bookings", label: "Bookings", icon: CalendarDays, href: "/marketplace?view=bookings" },
-      { id: "saved", label: "Saved", icon: Heart, href: "/marketplace?view=saved" },
+      { id: "home", label: "Home", icon: House, href: "/" },
+      { id: "search", label: "Search", icon: Search, href: "/?view=search" },
+      { id: "activity", label: "Activity", icon: CalendarDays, href: "/?view=activity" },
+      { id: "saved", label: "Saved", icon: Heart, href: "/?view=saved" },
+      { id: "notifications", label: "Notifications", icon: Bell, href: "/account#notifications" },
       { id: "profile", label: "Profile", icon: CircleUserRound, href: "/account" }
     ]
   },
@@ -52,92 +54,94 @@ export const portals = {
     id: "business",
     name: "Spotly Business",
     label: "Business",
-    href: "/business",
-    logo: "/brand/spotly-business.png",
+    href: "https://business.spotlyafrica.com",
+    logo: "/api/branding/assets/business_symbol_color.svg",
     accent: "#147A4A",
     accentStrong: "#0E5C36",
     accentSoft: "#E8F5ED",
     darkAccent: "#4ADE80",
     description: "Run orders, bookings, catalog, staff, and finances.",
     nav: [
-      { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, href: "/business" },
-      { id: "activity", label: "Activity", icon: ClipboardList, href: "/business/activity", badge: 7 },
-      { id: "catalog", label: "Catalog", icon: BookOpenCheck, href: "/business/catalog" },
-      { id: "branches", label: "Branches", icon: MapPin, href: "/business/branches" },
-      { id: "insights", label: "Insights", icon: BarChart3, href: "/business/insights" },
-      { id: "promotions", label: "Promotions", icon: BadgeDollarSign, href: "/business/promotions" },
-      { id: "staff", label: "Staff", icon: UsersRound, href: "/business/staff" },
-      { id: "finance", label: "Finance", icon: WalletCards, href: "/business/finance" },
-      { id: "support", label: "Support", icon: LifeBuoy, href: "/business/support" },
-      { id: "settings", label: "Settings", icon: Settings, href: "/business/settings" }
+      { id: "dashboard", label: "Today", icon: LayoutDashboard, href: "/" },
+      { id: "activity", label: "Orders & bookings", icon: ClipboardList, href: "/activity" },
+      { id: "catalog", label: "Offerings", icon: BookOpenCheck, href: "/catalog" },
+      { id: "branches", label: "Locations", icon: MapPin, href: "/branches" },
+      { id: "delivery", label: "Delivery", icon: Truck, href: "/delivery" },
+      { id: "insights", label: "Insights", icon: BarChart3, href: "/insights" },
+      { id: "promotions", label: "Promotions", icon: BadgeDollarSign, href: "/promotions" },
+      { id: "staff", label: "Staff", icon: UsersRound, href: "/staff" },
+      { id: "finance", label: "Money", icon: WalletCards, href: "/finance" },
+      { id: "support", label: "Support", icon: LifeBuoy, href: "/support" },
+      { id: "settings", label: "Settings", icon: Settings, href: "/settings" }
+    ]
+  },
+  staff: {
+    id: "staff",
+    name: "Spotly Staff",
+    label: "Staff",
+    href: "https://staff.spotlyafrica.com",
+    logo: "/api/branding/assets/primary_symbol_color.svg",
+    accent: "#111111",
+    accentStrong: "#000000",
+    accentSoft: "#F1F2F4",
+    darkAccent: "#F4F4F5",
+    description: "Work, schedule, people, learning, pay, and internal support.",
+    nav: [
+      { id: "today", label: "Today", icon: House, href: "/" },
+      { id: "work", label: "My work", icon: ListChecks, href: "/work" },
+      { id: "schedule", label: "Schedule", icon: CalendarDays, href: "/schedule" },
+      { id: "leave", label: "Time off", icon: Heart, href: "/leave" },
+      { id: "learning", label: "Learning", icon: BookOpenCheck, href: "/learning" },
+      { id: "performance", label: "Performance", icon: Sparkles, href: "/performance" },
+      { id: "pay", label: "Pay", icon: WalletCards, href: "/pay" },
+      { id: "notifications", label: "Notifications", icon: Bell, href: "/notifications" },
+      { id: "profile", label: "Profile", icon: CircleUserRound, href: "/profile" }
     ]
   },
   driver: {
     id: "driver",
     name: "Spotly Driver",
     label: "Driver",
-    href: "/driver",
-    logo: "/brand/spotly-driver.png",
+    href: "https://driver.spotlyafrica.com",
+    logo: "/api/branding/assets/driver_symbol_color.svg",
     accent: "#2563EB",
     accentStrong: "#1D4ED8",
     accentSoft: "#EAF1FF",
     darkAccent: "#60A5FA",
-    description: "Manage offers, active jobs, shifts, and earnings.",
+    description: "Get ready, go online, complete work safely, and understand your earnings.",
     nav: [
-      { id: "home", label: "Home", icon: House, href: "/driver" },
-      { id: "jobs", label: "Jobs", icon: ListChecks, href: "/driver/jobs", badge: 3 },
-      { id: "active", label: "Active job", icon: MapPinned, href: "/driver/active" },
-      { id: "earnings", label: "Earnings", icon: BadgeDollarSign, href: "/driver/earnings" },
-      { id: "history", label: "History", icon: PackageCheck, href: "/driver/history" },
-      { id: "support", label: "Safety & support", icon: LifeBuoy, href: "/driver/support" },
-      { id: "profile", label: "Profile", icon: CircleUserRound, href: "/driver/profile" }
+      { id: "home", label: "Home", icon: House, href: "/" },
+      { id: "jobs", label: "Work", icon: ListChecks, href: "/jobs" },
+      { id: "active", label: "Active job", icon: MapPinned, href: "/active" },
+      { id: "earnings", label: "Earnings", icon: BadgeDollarSign, href: "/earnings" },
+      { id: "history", label: "Activity", icon: PackageCheck, href: "/history" },
+      { id: "notifications", label: "Notifications", icon: Bell, href: "/notifications" },
+      { id: "support", label: "Safety", icon: LifeBuoy, href: "/support" },
+      { id: "profile", label: "Account", icon: CircleUserRound, href: "/profile" }
     ]
   },
   admin: {
     id: "admin",
     name: "Spotly Admin",
     label: "Admin",
-    href: "/admin",
-    logo: "/brand/spotly-admin.png",
+    href: "https://admin.spotlyafrica.com",
+    logo: "/api/branding/assets/primary_symbol_color.svg",
     accent: "#28466F",
     accentStrong: "#1B3152",
     accentSoft: "#EAF0F7",
     darkAccent: "#78A5D8",
     description: "Operate the platform, review risk, and manage access.",
     nav: [
-      { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, href: "/admin" },
-      { id: "operations", label: "Operations", icon: Truck, href: "/admin/operations", badge: 12 },
-      { id: "businesses", label: "Businesses", icon: Building2, href: "/admin/businesses", badge: 4 },
-      { id: "drivers", label: "Drivers", icon: Bike, href: "/admin/drivers", badge: 6 },
-      { id: "customers", label: "Customers", icon: UsersRound, href: "/admin/customers" },
-      { id: "finance", label: "Finance", icon: CreditCard, href: "/admin/finance" },
-      { id: "content", label: "Content", icon: Compass, href: "/admin/content" },
-      { id: "platform", label: "Platform", icon: ShieldCheck, href: "/admin/platform" },
-      { id: "audit", label: "Audit log", icon: ClipboardList, href: "/admin/audit" },
-      { id: "settings", label: "Settings", icon: Settings, href: "/admin/settings" }
+      { group: "Operate", id: "home", label: "Home", icon: LayoutDashboard, href: "/" },
+      { group: "Operate", id: "guide", label: "How Admin works", icon: BookOpenCheck, href: "/guide" },
+      { group: "Operate", id: "work", label: "Work", icon: ListChecks, href: "/work" },
+      { group: "Operate", id: "marketplace", label: "Marketplace", icon: Store, href: "/marketplace" },
+      { group: "Operate", id: "business-register", label: "Business register", icon: Building2, href: "/business-register" },
+      { group: "Operate", id: "mobility", label: "Ride & Send Launch", icon: Bike, href: "/mobility" },
+      { group: "Operate", id: "money", label: "Money", icon: CreditCard, href: "/money" },
+      { group: "Build", id: "growth", label: "Growth", icon: Compass, href: "/growth" },
+      { group: "Build", id: "team", label: "Team & access", icon: UsersRound, href: "/team" },
+      { group: "Build", id: "system", label: "System", icon: ShieldCheck, href: "/system" }
     ]
   }
-};
-
-export const globalNotifications = {
-  customer: [
-    { id: "c1", title: "Booking confirmed", message: "Your table at Namaste Harare is confirmed for 19:30.", time: "8 min", unread: true },
-    { id: "c2", title: "Order on the way", message: "Your driver is 6 minutes away.", time: "21 min", unread: true },
-    { id: "c3", title: "Weekend picks", message: "Five new events match your interests.", time: "2 h", unread: false }
-  ],
-  business: [
-    { id: "b1", title: "New order ORD-4824", message: "US$24.50 · Delivery · 4 items", time: "Now", unread: true },
-    { id: "b2", title: "Reservation request", message: "Table for 4 at 19:30 tonight.", time: "4 min", unread: true },
-    { id: "b3", title: "Payout scheduled", message: "US$842.10 will arrive on Friday.", time: "1 h", unread: false }
-  ],
-  driver: [
-    { id: "d1", title: "Priority job available", message: "Borrowdale → Mount Pleasant · US$6.80", time: "Now", unread: true },
-    { id: "d2", title: "Weekly goal", message: "Two more jobs to unlock your US$12 bonus.", time: "18 min", unread: true },
-    { id: "d3", title: "Payout sent", message: "US$86.40 was sent to EcoCash.", time: "Yesterday", unread: false }
-  ],
-  admin: [
-    { id: "a1", title: "Critical incident INC-0090", message: "Fraud pattern detected. Immediate review required.", time: "5 min", unread: true },
-    { id: "a2", title: "Payout POT-3340 on hold", message: "Active dispute requires finance review.", time: "24 min", unread: true },
-    { id: "a3", title: "Driver application submitted", message: "Nomsa Dube is ready for verification.", time: "2 h", unread: false }
-  ]
 };

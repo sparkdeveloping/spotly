@@ -1,27 +1,49 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { CheckCircle2, CircleAlert, Info, X } from "lucide-react";
 import { FirebaseProvider, PlatformProvider } from "@/components/firebase-provider";
+import { CountryProvider } from "@/components/country-provider";
 
 const ThemeContext = createContext(null);
 const ToastContext = createContext(null);
 
 const themeListeners = new Set();
+const THEME_KEY = "spotly-theme";
+const THEME_COOKIE = "spotly_theme";
+const VALID_THEMES = new Set(["light", "dark", "system"]);
+
+function normalizeTheme(value) {
+  return VALID_THEMES.has(value) ? value : "system";
+}
+
+function readThemeCookie() {
+  const match = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith(`${THEME_COOKIE}=`));
+  return match ? decodeURIComponent(match.slice(THEME_COOKIE.length + 1)) : "";
+}
+
+function writeThemeCookie(value) {
+  const production = window.location.hostname === "spotlyafrica.com" || window.location.hostname === "www.spotlyafrica.com" || window.location.hostname.endsWith(".spotlyafrica.com");
+  const parts = [`${THEME_COOKIE}=${encodeURIComponent(value)}`, "Path=/", "Max-Age=31536000", "SameSite=Lax"];
+  if (production) parts.push("Secure", "Domain=.spotlyafrica.com");
+  document.cookie = parts.join("; ");
+}
 
 function getThemeSnapshot() {
-  return window.localStorage.getItem("spotly-theme") || "light";
+  const shared = normalizeTheme(readThemeCookie());
+  const local = normalizeTheme(window.localStorage.getItem(THEME_KEY));
+  return readThemeCookie() ? shared : local;
 }
 
 function getThemeServerSnapshot() {
-  return "light";
+  return "system";
 }
 
 function subscribeTheme(listener) {
   themeListeners.add(listener);
   const onStorage = (event) => {
-    if (event.key === "spotly-theme") listener();
+    if (event.key === THEME_KEY) listener();
   };
   window.addEventListener("storage", onStorage);
   return () => {
@@ -31,31 +53,65 @@ function subscribeTheme(listener) {
 }
 
 function setStoredTheme(nextTheme) {
-  window.localStorage.setItem("spotly-theme", nextTheme);
+  const normalized = normalizeTheme(nextTheme);
+  window.localStorage.setItem(THEME_KEY, normalized);
+  writeThemeCookie(normalized);
   themeListeners.forEach((listener) => listener());
+}
+
+function resolveTheme(theme, mediaMatches) {
+  return theme === "system" ? (mediaMatches ? "dark" : "light") : theme;
 }
 
 function ThemeProvider({ children }) {
   const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getThemeServerSnapshot);
+  const [systemDark, setSystemDark] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const update = () => setSystemDark(media.matches);
+    const syncSharedTheme = () => {
+      const shared = readThemeCookie();
+      if (!shared) {
+        writeThemeCookie(normalizeTheme(window.localStorage.getItem(THEME_KEY)));
+        return;
+      }
+      const normalized = normalizeTheme(shared);
+      if (window.localStorage.getItem(THEME_KEY) !== normalized) {
+        window.localStorage.setItem(THEME_KEY, normalized);
+        themeListeners.forEach((listener) => listener());
+      }
+    };
+    update();
+    syncSharedTheme();
+    media.addEventListener("change", update);
+    window.addEventListener("focus", syncSharedTheme);
+    document.addEventListener("visibilitychange", syncSharedTheme);
+    return () => {
+      media.removeEventListener("change", update);
+      window.removeEventListener("focus", syncSharedTheme);
+      document.removeEventListener("visibilitychange", syncSharedTheme);
+    };
+  }, []);
+
+  const resolvedTheme = resolveTheme(theme, systemDark);
 
   useEffect(() => {
     const root = document.documentElement;
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const applyTheme = () => {
-      const dark = theme === "dark" || (theme === "system" && media.matches);
-      root.classList.toggle("dark", dark);
-      root.dataset.theme = theme;
-    };
-    applyTheme();
-    media.addEventListener("change", applyTheme);
-    return () => media.removeEventListener("change", applyTheme);
-  }, [theme]);
+    const dark = resolvedTheme === "dark";
+    root.classList.toggle("dark", dark);
+    root.dataset.theme = theme;
+    root.dataset.resolvedTheme = resolvedTheme;
+    root.style.colorScheme = resolvedTheme;
+  }, [resolvedTheme, theme]);
 
   const value = useMemo(() => ({
     theme,
+    selectedTheme: theme,
+    resolvedTheme,
     setTheme: setStoredTheme,
-    isDark: theme === "dark"
-  }), [theme]);
+    isDark: resolvedTheme === "dark"
+  }), [resolvedTheme, theme]);
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
@@ -70,28 +126,40 @@ function ToastProvider({ children }) {
   const toast = useCallback((message, options = {}) => {
     const normalized = typeof options === "string" ? { type: options } : options;
     const id = `${Date.now()}-${Math.random()}`;
-    const next = { id, message, type: normalized.type || "success", title: normalized.title || "Done" };
+    const kind=normalized.type||"success";
+    const next={id,message,type:kind,title:normalized.title||(kind==="error"?"Unable to continue":kind==="info"?"Notice":"Done")};
     setToasts((items) => [...items.slice(-3), next]);
-    window.setTimeout(() => dismiss(id), normalized.duration || 3600);
+    window.setTimeout(() => dismiss(id), normalized.duration || (kind === "error" ? 9000 : 3600));
     return id;
   }, [dismiss]);
+
+  useEffect(() => {
+    const onActionError = (event) => {
+      const message = String(event.detail?.message || "The action could not be completed.").slice(0, 400);
+      toast(message, { type: "error", title: "Action needs attention", duration: 10000 });
+    };
+    window.addEventListener("spotly:action-error", onActionError);
+    return () => window.removeEventListener("spotly:action-error", onActionError);
+  }, [toast]);
 
   const value = useMemo(() => ({ toast, dismiss }), [toast, dismiss]);
 
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div className="pointer-events-none fixed inset-x-4 top-4 z-[100] flex flex-col items-end gap-2 sm:left-auto sm:right-4 sm:w-[390px]">
+      <div className="pointer-events-none fixed inset-x-4 bottom-4 z-[200] flex flex-col items-end gap-2 sm:left-auto sm:right-5 sm:w-[420px]">
         <AnimatePresence initial={false}>
           {toasts.map((item) => {
             const Icon = item.type === "error" ? CircleAlert : item.type === "info" ? Info : CheckCircle2;
             return (
               <motion.div
                 key={item.id}
-                initial={{ opacity: 0, y: -16, scale: 0.97 }}
+                initial={{ opacity: 0, y: 16, scale: 0.97 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, x: 24, scale: 0.97 }}
-                className="surface pointer-events-auto flex w-full items-start gap-3 rounded-2xl p-4 shadow-elevated"
+                role={item.type === "error" ? "alert" : "status"}
+                aria-live={item.type === "error" ? "assertive" : "polite"}
+                className="surface pointer-events-auto flex w-full items-start gap-3 rounded-2xl border border-[var(--border)] p-4 shadow-elevated"
               >
                 <Icon className={item.type === "error" ? "mt-0.5 h-5 w-5 text-danger" : item.type === "info" ? "mt-0.5 h-5 w-5 text-info" : "mt-0.5 h-5 w-5 text-success"} />
                 <div className="min-w-0 flex-1">
@@ -112,13 +180,17 @@ function ToastProvider({ children }) {
 
 export function AppProviders({ children }) {
   return (
-    <ThemeProvider>
-      <FirebaseProvider>
-        <PlatformProvider>
-          <ToastProvider>{children}</ToastProvider>
-        </PlatformProvider>
-      </FirebaseProvider>
-    </ThemeProvider>
+    <MotionConfig reducedMotion="user">
+      <ThemeProvider>
+        <FirebaseProvider>
+          <CountryProvider>
+            <PlatformProvider>
+              <ToastProvider>{children}</ToastProvider>
+            </PlatformProvider>
+          </CountryProvider>
+        </FirebaseProvider>
+      </ThemeProvider>
+    </MotionConfig>
   );
 }
 

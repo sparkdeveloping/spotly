@@ -7,3 +7,32 @@ out
 npm-debug.log*
 .DS_Store
 coverage
+
+# Firebase Admin
+# Ignore untracked JSON credentials while explicitly allowing safe tracked data.
+*.json
+!package*.json
+!/data/themenu/image-candidates-2026-10-21.json
+# .firebaserc is a public project selector, not a service-account key.
+
+
+.env
+.env.local
+# Canonical Spotly wire contracts are source, not generated runtime data.
+!/contracts/spotly-contracts.v1.json
+!/contracts/spotly-countries.v1.json
+!/contracts/spotly-service-availability.v1.json
+!/contracts/spotly-customer-runtime.v1.json
+!/contracts/spotly-media-discovery.v1.json
+!/contracts/fixtures/
+!/contracts/fixtures/*.json
+!/database.rules.json
+!/firebase/functions/src/contracts/spotly-contracts.v1.json
+!/firebase/functions/src/contracts/spotly-countries.v1.json
+!/firebase/functions/src/contracts/spotly-service-availability.v1.json
+!/firebase/functions/src/contracts/spotly-customer-runtime.v1.json
+!/firebase/functions/src/contracts/spotly-media-discovery.v1.json
+
+.env.local.old-denzeltinashe-spotly
+database-debug.log
+firestore-debug.log

@@ -2,6 +2,8 @@ import { FieldValue } from "firebase-admin/firestore";
 import { z } from "zod";
 import { apiError, authenticateRequest, getAdminServices } from "@/lib/firebase-admin";
 import { safeText } from "@/lib/server-helpers";
+import { canonicalSpotlyUrl } from "@/lib/spotly-domains";
+import { effectiveSecret } from "@/lib/platform-secrets-server";
 
 export const runtime = "nodejs";
 
@@ -31,35 +33,40 @@ function template(type, data) {
       heading: "Your claim is in review",
       body: `We received your claim for ${escapeHtml(data.businessName || "your business")}. You can continue preparing the profile while our team verifies the information.`,
       action: "View claim status",
-      href: "/business"
+      href: "/",
+      workspace: "business"
     },
     claim_update: {
       subject: `Business claim ${escapeHtml(data.status || "update")}`,
       heading: "Your claim status changed",
       body: escapeHtml(data.message || "Open Spotly to review the latest verification update."),
       action: "Review update",
-      href: "/business"
+      href: "/",
+      workspace: "business"
     },
     support_reply: {
       subject: "Spotly support replied",
       heading: "You have a new support reply",
       body: escapeHtml(data.message || "A support agent replied to your conversation."),
       action: "Open support",
-      href: "/support"
+      href: "/support",
+      workspace: "customer"
     },
     business_invitation: {
       subject: `You were invited to ${escapeHtml(data.businessName || "a Spotly business")}`,
       heading: "Business team invitation",
       body: `${escapeHtml(data.inviterName || "A business owner")} invited you to join ${escapeHtml(data.businessName || "their business")} on Spotly.`,
       action: "Accept invitation",
-      href: `/business?invitation=${encodeURIComponent(data.invitationId || "")}`
+      href: `/?invitation=${encodeURIComponent(data.invitationId || "")}`,
+      workspace: "business"
     },
     order_update: {
       subject: `Order ${escapeHtml(data.orderNumber || "")} update`,
       heading: `Your order is ${escapeHtml(data.status || "updated")}`,
       body: escapeHtml(data.message || "Open Spotly for the latest pickup information."),
       action: "View order",
-      href: `/marketplace?order=${encodeURIComponent(data.orderId || "")}`
+      href: `/marketplace?order=${encodeURIComponent(data.orderId || "")}`,
+      workspace: "customer"
     }
   };
   return templates[type];
@@ -71,18 +78,22 @@ export async function POST(request) {
     const body = schema.parse(await request.json());
     const { db } = getAdminServices();
     const roles = new Set(user.profile?.roles || []);
-    const canSendToOthers = roles.has("super_admin") || roles.has("admin") || roles.has("platform_admin") || roles.has("content_manager");
+    let canSendToOthers = roles.has("super_admin") || roles.has("admin") || roles.has("platform_admin") || roles.has("content_manager");
+    if (!canSendToOthers && body.type === "business_invitation" && body.data.invitationId) {
+      const invitation = await db.collection("businessInvitations").doc(String(body.data.invitationId)).get();
+      const values = invitation.exists ? invitation.data() : null;
+      canSendToOthers = Boolean(values && values.invitedBy === user.uid && String(values.email || "").toLowerCase() === body.to.toLowerCase());
+    }
     if (body.to.toLowerCase() !== user.email?.toLowerCase() && !canSendToOthers) {
       throw Object.assign(new Error("You cannot send this notification."), { status: 403 });
     }
 
-    const apiKey = process.env.RESEND_API_KEY;
-    const from = process.env.RESEND_FROM_EMAIL || "Spotly <onboarding@resend.dev>";
+    const apiKey = await effectiveSecret("resend", "apiKey", ["RESEND_API_KEY"]);
+    const from = (await effectiveSecret("resend", "fromEmail", ["RESEND_FROM_EMAIL"])) || "Spotly <onboarding@resend.dev>";
     if (!apiKey) throw Object.assign(new Error("Email delivery is not configured yet."), { status: 503 });
 
     const content = template(body.type, body.data);
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || new URL(request.url).origin;
-    const href = `${baseUrl}${content.href}`;
+    const href = canonicalSpotlyUrl(content.href, content.workspace || "customer");
     const html = `<!doctype html><html><body style="margin:0;background:#f6f7fb;font-family:Arial,sans-serif;color:#16161d"><div style="max-width:600px;margin:0 auto;padding:32px 18px"><div style="background:#fff;border:1px solid #e9e9ef;border-radius:22px;padding:32px"><div style="font-size:22px;font-weight:800;color:#6657d9">Spotly</div><h1 style="font-size:28px;line-height:1.15;margin:28px 0 12px">${content.heading}</h1><p style="font-size:16px;line-height:1.7;color:#5f6070;margin:0 0 26px">${content.body}</p><a href="${href}" style="display:inline-block;background:#6657d9;color:#fff;text-decoration:none;font-weight:700;padding:13px 20px;border-radius:12px">${content.action}</a><p style="font-size:12px;line-height:1.6;color:#9697a3;margin:30px 0 0">This operational message was sent by Spotly. Support contact details are managed from the Spotly admin platform.</p></div></div></body></html>`;
 
     const response = await fetch("https://api.resend.com/emails", {

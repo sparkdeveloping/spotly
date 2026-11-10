@@ -1,21 +1,28 @@
 import "server-only";
+import { effectiveSecret } from "@/lib/platform-secrets-server";
 
-function credentialsFor(currency = "USD") {
-  const suffix = currency === "ZWG" ? "ZWG" : "USD";
+async function credentialsFor(currency = "USD") {
+  const suffix = currency === "ZWG" ? "Zwg" : "Usd";
+  const upper = currency === "ZWG" ? "ZWG" : "USD";
   return {
-    id: process.env[`PAYNOW_INTEGRATION_ID_${suffix}`] || process.env.PAYNOW_INTEGRATION_ID,
-    key: process.env[`PAYNOW_INTEGRATION_KEY_${suffix}`] || process.env.PAYNOW_INTEGRATION_KEY
+    id: await effectiveSecret("paynow", `integrationId${suffix}`, [`PAYNOW_INTEGRATION_ID_${upper}`]) || await effectiveSecret("paynow", "integrationId", ["PAYNOW_INTEGRATION_ID"]),
+    key: await effectiveSecret("paynow", `integrationKey${suffix}`, [`PAYNOW_INTEGRATION_KEY_${upper}`]) || await effectiveSecret("paynow", "integrationKey", ["PAYNOW_INTEGRATION_KEY"])
   };
 }
 
+/** Read-only configuration signal; this does NOT send money or validate merchant settlement. */
+export async function paynowCredentialsConfigured(currency="USD"){
+ const credentials=await credentialsFor(currency);
+ return Boolean(credentials.id&&credentials.key);
+}
 export async function createPaynow(currency = "USD") {
-  const credentials = credentialsFor(currency);
+  const credentials = await credentialsFor(currency);
   if (!credentials.id || !credentials.key) {
     throw Object.assign(new Error(`Paynow ${currency} credentials are not configured.`), { status: 503 });
   }
 
-  const module = await import("paynow");
-  const Paynow = module.Paynow || module.default?.Paynow || module.default;
+  const paynowModule = await import("paynow");
+  const Paynow = paynowModule.Paynow || paynowModule.default?.Paynow || paynowModule.default;
   if (!Paynow) throw new Error("The Paynow SDK could not be loaded.");
   return new Paynow(credentials.id, credentials.key);
 }
@@ -24,7 +31,7 @@ export function normalizePaynowStatus(status) {
   const rawStatus = String(status?.status || "unknown").toLowerCase();
   let state = "pending";
   if (["paid", "awaiting delivery", "delivered"].includes(rawStatus)) state = "paid";
-  else if (["cancelled", "failed", "disputed", "refunded"].includes(rawStatus)) state = rawStatus;
+  else if (["cancelled", "failed", "expired", "refunded"].includes(rawStatus)) state = rawStatus;
 
   return {
     state,
@@ -33,6 +40,13 @@ export function normalizePaynowStatus(status) {
     amount: Number(status?.amount || 0),
     reference: status?.reference || "",
     providerReference: status?.paynowreference || status?.paynowReference || "",
+    pollUrl: status?.pollurl || status?.pollUrl || "",
     error: status?.error || ""
   };
+}
+
+export function paynowChargeLines(order = {}) {
+  const total = Number(order.totals?.total ?? order.total ?? 0);
+  if (!Number.isFinite(total) || total <= 0) throw new Error("The order total is invalid.");
+  return [{ name: `Spotly order ${order.number || order.id || ""}`.trim(), amount: Number(total.toFixed(2)) }];
 }

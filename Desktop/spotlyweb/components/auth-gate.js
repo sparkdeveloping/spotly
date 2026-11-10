@@ -2,13 +2,42 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
 import { LoaderCircle, LockKeyhole } from "lucide-react";
 import { Button, Card } from "@/components/ui";
 import { useAuth } from "@/components/firebase-provider";
+import { BusinessMarketingPage } from "@/components/business/business-marketing";
+import { DriverMarketingPage } from "@/components/driver/driver-marketing";
+import { normalizePortalPath, spotlyLoginUrl, spotlyPortalUrl } from "@/lib/spotly-domains";
 
-export function AuthGate({ children, portal = "customer", title = "Sign in required" }) {
+function currentPortalDestination(portal, pathname, searchParams) {
+  const cleanPath = portal === "customer" ? (pathname || "/") : normalizePortalPath(portal, pathname || "/");
+  const query = searchParams?.toString?.() || "";
+  return `${cleanPath || "/"}${query ? `?${query}` : ""}`;
+}
+
+function isBusinessLanding(pathname) {
+  return !pathname || pathname === "/" || pathname === "/business" || pathname === "/business/";
+}
+
+function isDriverLanding(pathname) {
+  return !pathname || pathname === "/" || pathname === "/driver" || pathname === "/driver/";
+}
+
+export function AuthGate({ children, portal = "customer", title = "Sign in required", sameOriginLogin = false }) {
   const { user, authReady } = useAuth();
-  if (!authReady) return <div className="flex min-h-screen items-center justify-center bg-grouped"><LoaderCircle className="h-8 w-8 animate-spin text-violet" /></div>;
-  if (!user || user.isAnonymous) return <main className="flex min-h-screen items-center justify-center bg-grouped px-4" style={{ "--accent": "#6657d9", "--accent-soft": "#f0eeff" }}><Card elevated className="w-full max-w-md p-7 text-center"><Image src="/brand/spotly.png" alt="Spotly" width={64} height={64} className="mx-auto rounded-[20px]" /><span className="mx-auto mt-6 flex h-12 w-12 items-center justify-center rounded-2xl bg-violet-soft text-violet"><LockKeyhole className="h-6 w-6" /></span><h1 className="mt-5 text-2xl font-black">{title}</h1><p className="mt-3 text-sm leading-6 text-secondary">Use your primary Spotly email-and-password account. Other sign-in methods can be linked after account creation.</p><Button asChild className="mt-6 w-full"><Link href={`/login?portal=${portal}`}>Sign in to continue</Link></Button><Link href="/" className="mt-4 block text-sm font-semibold text-secondary">Return to Spotly</Link></Card></main>;
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const next = sameOriginLogin ? (pathname || "/") + (searchParams?.toString?.() ? "?" + searchParams.toString() : "") : currentPortalDestination(portal, pathname, searchParams);
+  const loginHref = sameOriginLogin ? "/login?portal=" + encodeURIComponent(portal) + "&mode=signin&next=" + encodeURIComponent(next) : spotlyLoginUrl(portal, { next, mode: "signin" });
+
+  if (!authReady) return <div className="flex min-h-screen items-center justify-center bg-grouped"><LoaderCircle className={`h-8 w-8 animate-spin ${portal === "business" ? "text-business" : portal === "driver" ? "text-driver" : "text-violet"}`} /></div>;
+  if (!user || user.isAnonymous) {
+    if (portal === "business" && isBusinessLanding(pathname)) return <BusinessMarketingPage loginHref={loginHref} />;
+    if (portal === "driver" && isDriverLanding(pathname)) return <DriverMarketingPage loginHref={loginHref} />;
+    const isDriver = portal === "driver";
+    const isDriverInvitation = isDriver && ["/complete", "/driver/complete"].includes(pathname);
+    return <main data-workspace={portal} className="flex min-h-screen items-center justify-center bg-grouped px-4"><Card elevated className="w-full max-w-md p-7 text-center"><Image src={portal === "business" ? "/api/branding/assets/business_symbol_color.svg" : isDriver ? "/api/branding/assets/driver_symbol_color.svg" : "/api/branding/assets/primary_symbol_color.svg"} alt={isDriver ? "Spotly Driver" : "Spotly"} width={64} height={64} className="mx-auto" /><span className={`mx-auto mt-6 flex h-12 w-12 items-center justify-center rounded-xl ${portal === "business" ? "bg-business-soft text-business" : isDriver ? "bg-driver-soft text-driver" : "bg-violet-soft text-violet"}`}><LockKeyhole className="h-6 w-6" /></span><h1 className="mt-5 text-2xl font-semibold">{isDriver ? "Sign in to Spotly Driver" : title}</h1><p className="mt-3 text-sm leading-6 text-secondary">{isDriverInvitation ? "Sign in or create a Spotly account using the email or phone number given to our officer. We will reopen your saved invitation and continue your Driver application from where our team stopped." : isDriver ? "Sign in to return to this Driver page. New applicants can start from the Driver homepage." : "Sign in with the Spotly account connected to this workspace. You will return to this exact page after authentication."}</p><Button asChild className="mt-6 w-full"><Link href={loginHref}>{isDriver ? "Sign in to Driver" : "Sign in to continue"}</Link></Button><Link href={portal === "business" ? spotlyPortalUrl("business") : isDriver ? spotlyPortalUrl("driver") : spotlyPortalUrl("customer")} className="mt-4 block text-sm font-semibold text-secondary">{portal === "business" ? "Back to Spotly Business" : isDriver ? "Back to Spotly Driver" : "Return to Spotly"}</Link></Card></main>;
+  }
   return children;
 }

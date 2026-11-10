@@ -1,0 +1,40 @@
+import { businessPhotography, businessPhotoFamily } from "./business-photography.js";
+
+function validPhoto(value) {
+  if (typeof value !== "string" || !value.trim() || /\/marketplace\/(?:editorial|editorial-pack|photography)\//i.test(value) || /\.(?:svg|gif)(?:[?#]|$)/i.test(value) || /(?:^|\/)(?:logos?|avatars?|icons?)(?:\/|[._-])/i.test(value)) return "";
+  if (value.startsWith("/") && !value.startsWith("//")) return value;
+  try { const url = new URL(value); return url.protocol === "https:" && !url.username && !url.password ? value : ""; } catch { return ""; }
+}
+
+function merchantPhoto(record = {}) {
+  const evidence = record.imageProvenance || {};
+  const source = record.source || {};
+  const url = validPhoto(record.coverImage || record.image || record.imageUrl || record.photoUrl || record.media?.cover || record.media?.hero);
+  if (!url || url === record.logoUrl || url === record.logo || source.type === "themenu_partner" || /themenu\.co\.zw/i.test(url)) return "";
+  if ((Number(evidence.width) > 0 && Number(evidence.width) < 640) || (Number(evidence.height) > 0 && Number(evidence.height) < 360)) return "";
+  const directory = ["openstreetmap", "spotly_assist_research", "themenu_partner"].includes(source.type);
+  const claimed = record.claimed === true || record.claimStatus === "claimed";
+  // The map-data license and the photograph's permission are separate evidence.
+  const approved = evidence.approved === true && evidence.businessId === record.id && ["merchant_owned", "licensed"].includes(evidence.rightsStatus);
+  const hostedUpload = url.startsWith("https://firebasestorage.googleapis.com/") && (!directory || claimed);
+  const owned = source.rightsStatus === "merchant_owned" && source.type !== "themenu_partner";
+  return hostedUpload || approved || owned ? url : "";
+}
+
+export function marketplaceFallbackMedia(record = {}) { return businessPhotography(record); }
+
+export function marketplaceMedia(record = {}) {
+  const owned = merchantPhoto(record);
+  if (owned) return { src: owned, kind: "merchant", label: "", generated: false, family: businessPhotoFamily(record), position: record.imageProvenance?.position || "50% 50%" };
+  return marketplaceFallbackMedia(record);
+}
+
+export function marketplaceMediaSet(records = []) {
+  // Never remove a picture because another business shares its category. Card and
+  // profile must resolve the same subject regardless of list order or pagination.
+  return new Map(records.map((record) => [record.id || [record.name, record.city, record.area].filter(Boolean).join("|"), marketplaceMedia(record)]));
+}
+
+export function marketplaceEditorialImage(record = {}) { return marketplaceMedia(record).src; }
+export function shouldUseEditorialImage(record = {}) { return marketplaceMedia(record).kind === "editorial"; }
+export function marketplaceEditorialPoolSize() { return 1; }

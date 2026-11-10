@@ -1,64 +1,95 @@
 "use client";
 
-import { cloneElement, isValidElement } from "react";
-import { AnimatePresence, motion } from "framer-motion";
-import { ChevronDown, ChevronRight, LoaderCircle, Search, X } from "lucide-react";
+import Link from "next/link";
+import { cloneElement, forwardRef, isValidElement, useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { Check, ChevronDown, ChevronRight, ChevronsUpDown, LoaderCircle, Search, X } from "lucide-react";
 import { cn } from "@/lib/cn";
+
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export function Button({ children, variant = "primary", size = "md", className, loading = false, disabled, type = "button", asChild = false, ...props }) {
   const variants = {
-    primary: "bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)] shadow-sm",
-    secondary: "bg-[var(--accent-soft)] text-[var(--accent-strong)] dark:text-[var(--accent)] hover:brightness-[0.97] border border-[color-mix(in_srgb,var(--accent)_18%,var(--border))]",
-    outline: "surface hover:bg-[var(--surface-2)]",
-    ghost: "hover:bg-[var(--surface-2)]",
-    danger: "bg-danger text-white hover:bg-red-700",
-    success: "bg-success text-white hover:bg-green-700"
+    primary: "border border-transparent bg-[var(--accent)] text-[var(--on-accent)] hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]",
+    secondary: "border border-[color-mix(in_srgb,var(--accent)_25%,var(--border))] bg-[var(--accent-soft)] text-[var(--on-accent-soft)] hover:bg-[color-mix(in_srgb,var(--accent-soft)_80%,var(--accent)_20%)]",
+    outline: "border border-[var(--border-strong)] bg-[var(--surface)] text-[var(--text)] hover:bg-[var(--surface-hover)] active:bg-[var(--surface-2)]",
+    ghost: "border border-transparent bg-transparent text-[var(--text)] hover:bg-[var(--surface-hover)] active:bg-[var(--surface-2)]",
+    danger: "border border-transparent bg-[var(--danger)] text-[var(--on-danger)] hover:bg-[var(--danger-hover)]",
+    success: "border border-transparent bg-[var(--success)] text-[var(--on-success)] hover:bg-[var(--success-hover)]",
+    warning: "border border-transparent bg-[var(--warning)] text-[var(--on-warning)] hover:bg-[var(--warning-hover)]",
+    inverse: "border border-[var(--inverse-border)] bg-[var(--inverse-surface)] text-[var(--inverse-text)] hover:bg-[var(--inverse-surface-2)]"
   };
   const sizes = {
-    sm: "h-10 rounded-xl px-3.5 text-sm",
-    md: "h-[52px] rounded-2xl px-5 text-[15px]",
-    lg: "h-14 rounded-2xl px-6 text-base",
-    icon: "h-11 w-11 rounded-xl"
+    sm: "h-11 rounded-[12px] px-3.5 text-sm",
+    md: "h-[52px] rounded-[14px] px-5 text-[15px]",
+    lg: "h-14 rounded-[16px] px-6 text-base",
+    icon: "h-11 w-11 rounded-[12px]"
   };
-  const classes = cn("inline-flex shrink-0 items-center justify-center gap-2 font-semibold transition disabled:cursor-not-allowed disabled:opacity-50", variants[variant], sizes[size], className);
+  const isDisabled = Boolean(disabled || loading);
+  const classes = cn("experience-button inline-flex shrink-0 items-center justify-center gap-2 font-semibold transition-transform duration-150 motion-safe:hover:-translate-y-px motion-safe:active:translate-y-0 motion-safe:active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)] disabled:translate-y-0 disabled:scale-100 disabled:cursor-not-allowed disabled:border-[var(--border)] disabled:bg-[var(--control-bg-disabled)] disabled:text-[var(--control-text-disabled)] disabled:opacity-100", variants[variant] || variants.primary, sizes[size], className);
+
   if (asChild && isValidElement(children)) {
-    return cloneElement(children, { ...props, className: cn(classes, children.props.className), "aria-disabled": disabled || loading || undefined });
+    const childProps = {
+      ...props,
+      className: cn(classes, children.props.className),
+      "aria-disabled": isDisabled || undefined,
+      tabIndex: isDisabled ? -1 : children.props.tabIndex,
+      onClick: (event) => {
+        if (isDisabled) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        children.props.onClick?.(event);
+        props.onClick?.(event);
+      }
+    };
+    return cloneElement(children, childProps);
   }
+
   return (
-    <button type={type} disabled={disabled || loading} className={classes} {...props}>
-      {loading && <LoaderCircle className="h-4 w-4 animate-spin" />}
+    <button type={type} disabled={isDisabled} aria-busy={loading || undefined} className={classes} {...props}>
+      {loading && <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />}
       {children}
     </button>
   );
 }
 
-export function Card({ children, className, elevated = false, ...props }) {
-  return <div className={cn("surface rounded-2xl", elevated ? "shadow-elevated" : "shadow-card", className)} {...props}>{children}</div>;
+const cardVariants = {
+  plain: "bg-[var(--surface)]",
+  bordered: "surface",
+  raised: "surface shadow-elevated",
+  interactive: "surface transition hover:border-[color-mix(in_srgb,var(--accent)_28%,var(--border))] hover:bg-[var(--surface-2)]"
+};
+
+export function Card({ children, className, elevated = false, variant = elevated ? "raised" : "bordered", ...props }) {
+  return <div className={cn("experience-card rounded-[16px]", cardVariants[variant] || cardVariants.bordered, className)} {...props}>{children}</div>;
 }
 
-export function SectionCard({ title, description, action, children, className }) {
+export function SectionCard({ title, description, action, children, className, variant = "bordered", padded = false, contentClassName }) {
   return (
-    <Card className={className}>
+    <Card className={className} variant={variant}>
       {(title || action) && (
         <div className="flex items-start justify-between gap-4 border-b px-4 py-4 sm:px-5">
           <div>
             {title && <h2 className="text-[17px] font-semibold">{title}</h2>}
-            {description && <p className="mt-1 text-sm text-secondary">{description}</p>}
+            {description && <p className="mt-1 text-sm leading-6 text-secondary">{description}</p>}
           </div>
           {action}
         </div>
       )}
-      {children}
+      {padded ? <div className={cn("p-4 sm:p-5", contentClassName)}>{children}</div> : children}
     </Card>
   );
 }
 
 export function PageHeader({ eyebrow, title, description, actions, compact = false }) {
   return (
-    <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+    <div className="page-header flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
       <div className="max-w-3xl">
-        {eyebrow && <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--accent)]">{eyebrow}</p>}
-        <h1 className={cn("font-bold tracking-[-0.035em]", compact ? "text-3xl" : "text-[34px] leading-[1.08]")}>{title}</h1>
+        {eyebrow && <p className="mb-2 text-xs font-semibold tracking-[0.08em] text-[var(--accent)]">{eyebrow}</p>}
+        <h1 className={cn("font-semibold tracking-[-0.025em]", compact ? "text-3xl" : "text-[34px] leading-[1.08]")}>{title}</h1>
         {description && <p className="mt-2 max-w-2xl text-[15px] leading-6 text-secondary">{description}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
@@ -66,40 +97,45 @@ export function PageHeader({ eyebrow, title, description, actions, compact = fal
   );
 }
 
+export function PageSkeleton({ cards = 3, rows = 4, className }) {
+  return <div className={cn("space-y-7", className)} aria-busy="true" aria-label="Loading">
+    <div className="max-w-2xl"><div className="v7-skeleton h-4 w-28 rounded-full" /><div className="v7-skeleton mt-3 h-9 w-64 max-w-[75vw] rounded-[12px]" /><div className="v7-skeleton mt-3 h-4 w-full max-w-xl rounded-[10px]" /></div>
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{Array.from({ length: cards }).map((_, index) => <div key={index} className="rounded-[16px] border border-[var(--border-subtle)] bg-[var(--surface)] p-4"><div className="v7-skeleton h-10 w-10 rounded-[12px]" /><div className="v7-skeleton mt-5 h-3 w-24 rounded-full" /><div className="v7-skeleton mt-2 h-7 w-32 rounded-[10px]" /></div>)}</div>
+    <div className="rounded-[16px] border border-[var(--border-subtle)] bg-[var(--surface)] p-4 sm:p-5"><div className="v7-skeleton h-5 w-44 rounded-[10px]" /><div className="mt-4 divide-y divide-[var(--border-subtle)]">{Array.from({ length: rows }).map((_, index) => <div key={index} className="flex items-center gap-3 py-4"><div className="v7-skeleton h-10 w-10 shrink-0 rounded-[12px]" /><div className="flex-1"><div className="v7-skeleton h-4 w-1/3 rounded-[10px]" /><div className="v7-skeleton mt-2 h-3 w-1/2 rounded-[10px]" /></div></div>)}</div></div>
+  </div>;
+}
+
 export function MetricCard({ label, value, delta, hint, icon: Icon, tone = "default", onClick }) {
   const toneClass = tone === "danger" ? "text-danger" : tone === "warning" ? "text-warning" : tone === "success" ? "text-success" : "text-[var(--accent)]";
-  const Component = onClick ? motion.button : motion.div;
-  return (
-    <Component
-      whileHover={onClick ? { y: -2 } : undefined}
-      onClick={onClick}
-      className={cn("surface min-w-0 rounded-2xl p-4 text-left shadow-card", onClick && "cursor-pointer")}
-    >
+  const className = cn("surface min-w-0 rounded-xl p-4 text-left", onClick && "cursor-pointer transition hover:bg-[var(--surface-2)]");
+  const content = (
+    <>
       <div className="flex items-start justify-between gap-3">
         <p className="text-sm font-medium text-secondary">{label}</p>
-        {Icon && <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"><Icon className="h-4 w-4" /></span>}
+        {Icon && <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--accent-soft)] text-[var(--accent)]"><Icon className="h-4 w-4" aria-hidden="true" /></span>}
       </div>
-      <p className="mt-4 truncate text-[30px] font-bold tracking-[-0.035em]">{value}</p>
+      <p className="mt-4 truncate text-[29px] font-semibold tracking-[-0.03em]">{value}</p>
       {(delta || hint) && <p className="mt-2 flex flex-wrap gap-x-2 text-xs"><span className={cn("font-semibold", toneClass)}>{delta}</span><span className="text-tertiary">{hint}</span></p>}
-    </Component>
+    </>
   );
+  return onClick ? <button type="button" onClick={onClick} className={className}>{content}</button> : <div className={className}>{content}</div>;
 }
 
 const badgeMap = {
-  success: "bg-green-50 text-green-700 ring-green-600/20 dark:bg-green-950/40 dark:text-green-300",
-  warning: "bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-950/40 dark:text-amber-300",
-  danger: "bg-red-50 text-red-700 ring-red-600/20 dark:bg-red-950/40 dark:text-red-300",
-  info: "bg-blue-50 text-blue-700 ring-blue-600/20 dark:bg-blue-950/40 dark:text-blue-300",
-  neutral: "bg-[var(--surface-2)] text-secondary ring-[var(--border)]",
-  accent: "bg-[var(--accent-soft)] text-[var(--accent-strong)] ring-[color-mix(in_srgb,var(--accent)_25%,transparent)] dark:text-[var(--accent)]",
-  purple: "bg-violet-50 text-violet-700 ring-violet-600/20 dark:bg-violet-950/40 dark:text-violet-300",
-  green: "bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-950/40 dark:text-emerald-300"
+  success: "bg-[var(--success-soft)] text-[var(--on-success-soft)] ring-[color-mix(in_srgb,var(--success)_28%,transparent)]",
+  warning: "bg-[var(--warning-soft)] text-[var(--on-warning-soft)] ring-[color-mix(in_srgb,var(--warning)_28%,transparent)]",
+  danger: "bg-[var(--danger-soft)] text-[var(--on-danger-soft)] ring-[color-mix(in_srgb,var(--danger)_28%,transparent)]",
+  info: "bg-[var(--info-soft)] text-[var(--on-info-soft)] ring-[color-mix(in_srgb,var(--info)_28%,transparent)]",
+  neutral: "bg-[var(--surface-2)] text-[var(--text-2)] ring-[var(--border)]",
+  accent: "bg-[var(--accent-soft)] text-[var(--on-accent-soft)] ring-[color-mix(in_srgb,var(--accent)_25%,transparent)]",
+  purple: "bg-[var(--accent-soft)] text-[var(--on-accent-soft)] ring-[color-mix(in_srgb,var(--accent)_25%,transparent)]",
+  green: "bg-[var(--success-soft)] text-[var(--on-success-soft)] ring-[color-mix(in_srgb,var(--success)_28%,transparent)]"
 };
 
 export function Badge({ children, tone = "neutral", dot = false, className }) {
   return (
     <span className={cn("inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset", badgeMap[tone] || badgeMap.neutral, className)}>
-      {dot && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+      {dot && <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />}
       {children}
     </span>
   );
@@ -118,106 +154,398 @@ export function StatusBadge({ status }) {
   return <Badge tone={statusTone(status)} dot>{status}</Badge>;
 }
 
-export function SearchField({ value, onChange, placeholder = "Search", className, onFocus, shortcut }) {
+export function SearchField({ value, onChange, placeholder = "Search", className, onFocus, onKeyDown, shortcut, label = "Search", inputProps = {} }) {
   return (
-    <label className={cn("surface flex h-[52px] items-center gap-3 rounded-2xl px-4 transition focus-within:ring-2 focus-within:ring-[var(--accent)]/30", className)}>
-      <Search className="h-5 w-5 shrink-0 text-tertiary" />
+    <label className={cn("experience-search-field flex min-h-[52px] items-center gap-3 rounded-[12px] border border-[var(--control-border)] bg-[var(--control-bg)] px-4 text-[var(--control-text)] transition focus-within:border-[var(--focus)] focus-within:ring-2 focus-within:ring-[var(--focus-soft)]", className)}>
+      <span className="sr-only">{label}</span>
+      <Search className="h-5 w-5 shrink-0 text-tertiary" aria-hidden="true" />
       <input
+        type="search"
+        aria-label={label}
         value={value}
         onChange={(event) => onChange?.(event.target.value)}
         onFocus={onFocus}
+        onKeyDown={onKeyDown}
         placeholder={placeholder}
-        className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-tertiary"
+        className="min-w-0 flex-1 bg-transparent text-sm text-[var(--control-text)] outline-none placeholder:text-[var(--control-placeholder)]"
+        {...inputProps}
       />
       {value ? (
-        <button type="button" aria-label="Clear search" className="rounded-lg p-1 text-tertiary hover:bg-[var(--surface-2)]" onClick={() => onChange?.("")}><X className="h-4 w-4" /></button>
+        <button type="button" aria-label="Clear search" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-tertiary hover:bg-[var(--surface-2)]" onClick={() => onChange?.("")}><X className="h-4 w-4" /></button>
       ) : shortcut ? <kbd className="hidden rounded-lg border bg-[var(--surface-2)] px-2 py-1 text-[11px] text-tertiary sm:block">{shortcut}</kbd> : null}
     </label>
   );
 }
 
-export function Tabs({ tabs, value, onChange, className }) {
+function safeId(value) {
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+export function Tabs({ tabs, value, onChange, className, label = "Sections", idPrefix, controlsPanels = false }) {
+  const generated = useId();
+  const prefix = safeId(idPrefix || `tabs-${generated}`);
+  const tabRefs = useRef([]);
+  const reduceMotion = useReducedMotion();
+  function onKeyDown(event, index) {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    let next = index;
+    if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+    if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+    if (event.key === "Home") next = 0;
+    if (event.key === "End") next = tabs.length - 1;
+    onChange(tabs[next].value);
+    requestAnimationFrame(() => tabRefs.current[next]?.focus());
+  }
   return (
-    <div className={cn("inline-flex max-w-full items-center gap-1 overflow-x-auto rounded-2xl bg-[var(--surface-2)] p-1", className)}>
-      {tabs.map((tab) => (
-        <button
-          key={tab.value}
-          type="button"
-          onClick={() => onChange(tab.value)}
-          className={cn("relative h-10 whitespace-nowrap rounded-xl px-4 text-sm font-semibold text-secondary transition", value === tab.value && "text-[var(--accent-strong)] dark:text-[var(--accent)]")}
-        >
-          {value === tab.value && <motion.span layoutId="active-tab" className="absolute inset-0 rounded-xl bg-[var(--surface)] shadow-sm" transition={{ type: "spring", bounce: 0.15, duration: 0.45 }} />}
-          <span className="relative">{tab.label}</span>
-        </button>
-      ))}
+    <div role="tablist" aria-label={label} className={cn("inline-flex max-w-full items-center gap-1 overflow-x-auto rounded-xl bg-[var(--surface-2)] p-1", className)}>
+      {tabs.map((tab, index) => {
+        const tabId = `${prefix}-tab-${safeId(tab.value)}`;
+        const panelId = `${prefix}-panel-${safeId(tab.value)}`;
+        const Icon = tab.icon;
+        return (
+          <button
+            ref={(node) => { tabRefs.current[index] = node; }}
+            key={tab.value}
+            id={tabId}
+            type="button"
+            role="tab"
+            aria-selected={value === tab.value}
+            aria-controls={controlsPanels ? panelId : undefined}
+            tabIndex={value === tab.value ? 0 : -1}
+            onKeyDown={(event) => onKeyDown(event, index)}
+            onClick={() => onChange(tab.value)}
+            className={cn("relative min-h-11 whitespace-nowrap rounded-lg px-4 text-sm font-semibold text-secondary transition", value === tab.value && "text-[var(--accent-strong)] dark:text-[var(--accent)]")}
+          >
+            {value === tab.value && <motion.span layoutId={`${prefix}-active-tab`} className="absolute inset-0 rounded-lg bg-[var(--surface)] shadow-sm" transition={reduceMotion ? { duration: 0 } : { type: "spring", bounce: 0.12, duration: 0.4 }} />}
+            <span className="relative inline-flex items-center gap-2">{Icon && <Icon className="h-4 w-4" aria-hidden="true" />}{tab.label}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
 
-export function Select({ value, onChange, options, className, ariaLabel = "Select option" }) {
+export function TabPanel({ idPrefix, value, tabValue, active, children, className, keepMounted = false }) {
+  // Support both explicit `active` panels and the older `value` + `tabValue` call pattern.
+  // Several production workspaces used the latter while TabPanel previously ignored tabValue,
+  // which made a selected tab render a completely blank page even though its counts updated.
+  const panelValue = tabValue ?? value;
+  const isActive = typeof active === "boolean" ? active : tabValue !== undefined ? value === tabValue : Boolean(active);
+  if (!isActive && !keepMounted) return null;
+  const prefix = safeId(idPrefix);
   return (
-    <label className={cn("surface relative flex h-11 items-center rounded-xl", className)}>
-      <select aria-label={ariaLabel} value={value} onChange={(event) => onChange(event.target.value)} className="h-full appearance-none bg-transparent pl-3 pr-9 text-sm font-medium outline-none">
+    <section
+      id={`${prefix}-panel-${safeId(panelValue)}`}
+      role="tabpanel"
+      aria-labelledby={`${prefix}-tab-${safeId(panelValue)}`}
+      hidden={!isActive}
+      tabIndex={0}
+      className={className}
+    >
+      {children}
+    </section>
+  );
+}
+
+export const Input = forwardRef(function Input({ className, invalid = false, ...props }, ref) {
+  return <input ref={ref} aria-invalid={invalid || undefined} className={cn("field-control", className)} {...props} />;
+});
+
+export const Textarea = forwardRef(function Textarea({ className, invalid = false, ...props }, ref) {
+  return <textarea ref={ref} aria-invalid={invalid || undefined} className={cn("field-control", className)} {...props} />;
+});
+
+export const NativeSelect = forwardRef(function NativeSelect({ className, invalid = false, children, ...props }, ref) {
+  return <select ref={ref} aria-invalid={invalid || undefined} className={cn("field-control appearance-none pr-10", className)} {...props}>{children}</select>;
+});
+
+export function Field({ label, description, error, required = false, children, className, id }) {
+  const generated = useId();
+  const fieldId = id || `field-${safeId(generated)}`;
+  const descriptionId = description ? `${fieldId}-description` : undefined;
+  const errorId = error ? `${fieldId}-error` : undefined;
+  const child = isValidElement(children) ? cloneElement(children, {
+    id: children.props.id || fieldId,
+    "aria-describedby": [children.props["aria-describedby"], descriptionId, errorId].filter(Boolean).join(" ") || undefined,
+    "aria-invalid": error ? true : children.props["aria-invalid"]
+  }) : children;
+  return <div className={className}><label htmlFor={fieldId} className="mb-2 block text-sm font-semibold text-[var(--text)]">{label}{required && <span aria-hidden="true" className="ml-1 text-[var(--danger)]">*</span>}</label>{description && <p id={descriptionId} className="mb-2 text-sm text-[var(--text-2)]">{description}</p>}{child}{error && <p id={errorId} className="mt-2 text-sm font-medium text-[var(--danger)]">{error}</p>}</div>;
+}
+
+export function ErrorSummary({ title = "Check the highlighted fields", errors = [], className }) {
+  if (!errors.length) return null;
+  return <div role="alert" tabIndex={-1} className={cn("rounded-xl border border-[var(--danger)] bg-[var(--danger-soft)] p-4 text-[var(--on-danger-soft)]", className)}><p className="font-semibold">{title}</p><ul className="mt-2 list-disc space-y-1 pl-5 text-sm">{errors.map((error, index) => <li key={`${error}-${index}`}>{error}</li>)}</ul></div>;
+}
+
+export function Checkbox({ label, description, className, ...props }) {
+  return <label className={cn("flex items-start gap-3", className)}><input type="checkbox" className="mt-0.5 h-5 w-5 shrink-0" {...props} /><span><span className="block text-sm font-semibold">{label}</span>{description && <span className="mt-1 block text-sm text-[var(--text-2)]">{description}</span>}</span></label>;
+}
+
+export function RadioGroup({ label, name, value, onChange, options, className }) {
+  return <fieldset className={className}><legend className="mb-2 text-sm font-semibold">{label}</legend><div className="space-y-2">{options.map((option) => <label key={option.value} className="flex items-start gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3"><input type="radio" name={name} value={option.value} checked={value === option.value} onChange={() => onChange(option.value)} className="mt-0.5 h-5 w-5" /><span><span className="block text-sm font-semibold">{option.label}</span>{option.description && <span className="mt-1 block text-sm text-[var(--text-2)]">{option.description}</span>}</span></label>)}</div></fieldset>;
+}
+
+export function Select({ value, onChange, options, className, ariaLabel = "Select option", ...props }) {
+  return (
+    <label className={cn("relative flex h-11 items-center rounded-lg", className)}>
+      <span className="sr-only">{ariaLabel}</span>
+      <select aria-label={ariaLabel} value={value} onChange={(event) => onChange(event.target.value)} className="field-control h-11 appearance-none py-0 pl-3 pr-9 text-sm font-medium" {...props}>
         {options.map((option) => <option key={option.value ?? option} value={option.value ?? option}>{option.label ?? option}</option>)}
       </select>
-      <ChevronDown className="pointer-events-none absolute right-3 h-4 w-4 text-tertiary" />
+      <ChevronDown className="pointer-events-none absolute right-3 h-4 w-4 text-tertiary" aria-hidden="true" />
     </label>
   );
 }
 
-export function Modal({ open, onClose, title, children, size = "md" }) {
+function normalizeEntityOption(option) {
+  if (typeof option === "string") return { value: option, label: option, description: "", keywords: "" };
+  return {
+    ...option,
+    value: String(option?.value ?? option?.id ?? ""),
+    label: String(option?.label ?? option?.name ?? option?.title ?? option?.value ?? option?.id ?? ""),
+    description: String(option?.description ?? option?.subtitle ?? ""),
+    keywords: Array.isArray(option?.keywords) ? option.keywords.join(" ") : String(option?.keywords ?? "")
+  };
+}
+
+export function EntityPicker({
+  value = "",
+  onChange,
+  options = [],
+  placeholder = "Choose an option",
+  searchPlaceholder = "Search by name, email, reference, or detail",
+  title = "Choose an option",
+  description,
+  emptyTitle = "No matching options",
+  emptyDescription = "Try another search.",
+  allowClear = true,
+  disabled = false,
+  className,
+  ariaLabel = title
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const normalized = useMemo(() => options.map(normalizeEntityOption).filter((option) => option.value), [options]);
+  const selected = normalized.find((option) => option.value === String(value || ""));
+  const filtered = useMemo(() => {
+    const term = query.trim().toLocaleLowerCase();
+    if (!term) return normalized;
+    return normalized.filter((option) => `${option.label} ${option.description} ${option.keywords} ${option.value}`.toLocaleLowerCase().includes(term));
+  }, [normalized, query]);
+  function choose(option) {
+    onChange?.(option?.value || "", option || null);
+    setOpen(false);
+    setQuery("");
+  }
+  return <>
+    <button type="button" aria-label={ariaLabel} aria-haspopup="dialog" disabled={disabled} onClick={() => setOpen(true)} className={cn("field-control flex min-h-12 w-full items-center justify-between gap-3 px-3 text-left disabled:cursor-not-allowed disabled:opacity-70", className)}>
+      <span className="min-w-0 flex-1">
+        {selected ? <><span className="block truncate text-sm font-semibold text-[var(--control-text)]">{selected.label}</span>{selected.description && <span className="mt-0.5 block truncate text-xs text-secondary">{selected.description}</span>}</> : <span className="text-sm text-[var(--control-placeholder)]">{placeholder}</span>}
+      </span>
+      <ChevronsUpDown className="h-4 w-4 shrink-0 text-tertiary" aria-hidden="true" />
+    </button>
+    <Modal open={open} onClose={() => { setOpen(false); setQuery(""); }} title={title} description={description} size="md">
+      <div className="space-y-4 p-5">
+        <SearchField value={query} onChange={setQuery} placeholder={searchPlaceholder} label={`Search ${title.toLocaleLowerCase()}`} />
+        {allowClear && value ? <button type="button" onClick={() => choose(null)} className="w-full rounded-xl border border-dashed p-3 text-left text-sm font-semibold text-secondary transition hover:bg-[var(--surface-hover)]">Clear selection</button> : null}
+        <div className="max-h-[52vh] space-y-2 overflow-y-auto pr-1">
+          {filtered.map((option) => {
+            const active = option.value === String(value || "");
+            return <button key={option.value} type="button" onClick={() => choose(option)} className={cn("flex w-full items-center gap-3 rounded-xl border p-3 text-left transition hover:bg-[var(--surface-hover)]", active && "border-[var(--accent)] bg-[var(--accent-soft)]")}>
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--surface-2)] text-sm font-bold text-[var(--accent-strong)]">{option.avatar || option.label.slice(0, 2).toUpperCase()}</span>
+              <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{option.label}</span>{option.description && <span className="mt-0.5 block truncate text-xs text-secondary">{option.description}</span>}</span>
+              {active && <Check className="h-4 w-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+            </button>;
+          })}
+          {!filtered.length && <EmptyState title={emptyTitle} description={emptyDescription} />}
+        </div>
+      </div>
+    </Modal>
+  </>;
+}
+
+export function EntityMultiPicker({
+  value = [],
+  onChange,
+  options = [],
+  placeholder = "Choose options",
+  searchPlaceholder = "Search options",
+  title = "Choose options",
+  description,
+  className,
+  max = 500
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const normalized = useMemo(() => options.map(normalizeEntityOption).filter((option) => option.value), [options]);
+  const selectedValues = useMemo(() => new Set((value || []).map(String)), [value]);
+  const selected = normalized.filter((option) => selectedValues.has(option.value));
+  const filtered = useMemo(() => {
+    const term = query.trim().toLocaleLowerCase();
+    if (!term) return normalized;
+    return normalized.filter((option) => `${option.label} ${option.description} ${option.keywords} ${option.value}`.toLocaleLowerCase().includes(term));
+  }, [normalized, query]);
+  function toggle(option) {
+    const next = new Set(selectedValues);
+    if (next.has(option.value)) next.delete(option.value);
+    else if (next.size < max) next.add(option.value);
+    onChange?.([...next]);
+  }
+  return <>
+    <button type="button" onClick={() => setOpen(true)} className={cn("field-control flex min-h-12 w-full items-center justify-between gap-3 px-3 text-left", className)}>
+      <span className="min-w-0 flex-1 text-sm">{selected.length ? <span className="font-semibold">{selected.length} selected</span> : <span className="text-[var(--control-placeholder)]">{placeholder}</span>}</span>
+      <ChevronsUpDown className="h-4 w-4 shrink-0 text-tertiary" aria-hidden="true" />
+    </button>
+    {selected.length ? <div className="mt-2 flex flex-wrap gap-2">{selected.slice(0, 8).map((option) => <span key={option.value} className="inline-flex items-center gap-1 rounded-full bg-[var(--accent-soft)] px-2.5 py-1 text-xs font-semibold text-[var(--on-accent-soft)]">{option.label}<button type="button" aria-label={`Remove ${option.label}`} onClick={() => toggle(option)}><X className="h-3.5 w-3.5" /></button></span>)}{selected.length > 8 && <span className="rounded-full bg-[var(--surface-2)] px-2.5 py-1 text-xs font-semibold text-secondary">+{selected.length - 8} more</span>}</div> : null}
+    <Modal open={open} onClose={() => { setOpen(false); setQuery(""); }} title={title} description={description} size="md">
+      <div className="space-y-4 p-5">
+        <SearchField value={query} onChange={setQuery} placeholder={searchPlaceholder} label={`Search ${title.toLocaleLowerCase()}`} />
+        <div className="flex items-center justify-between text-xs font-semibold text-secondary"><span>{selectedValues.size} selected</span><Button size="sm" onClick={() => setOpen(false)}>Done</Button></div>
+        <div className="max-h-[52vh] space-y-2 overflow-y-auto pr-1">{filtered.map((option) => { const active = selectedValues.has(option.value); return <button key={option.value} type="button" onClick={() => toggle(option)} className={cn("flex w-full items-center gap-3 rounded-xl border p-3 text-left transition hover:bg-[var(--surface-hover)]", active && "border-[var(--accent)] bg-[var(--accent-soft)]")}><span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-md border", active && "border-[var(--accent)] bg-[var(--accent)] text-[var(--on-accent)]")}>{active && <Check className="h-4 w-4" />}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{option.label}</span>{option.description && <span className="mt-0.5 block truncate text-xs text-secondary">{option.description}</span>}</span></button>; })}{!filtered.length && <EmptyState title="No matching options" description="Try another search." />}</div>
+      </div>
+    </Modal>
+  </>;
+}
+
+function useOverlayPortal(open, onClose) {
+  const [root, setRoot] = useState(null);
+  const dialogRef = useRef(null);
+  const previousFocus = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const node = document.createElement("div");
+    node.dataset.spotlyOverlayRoot = "true";
+    document.body.appendChild(node);
+    setRoot(node);
+    return () => {
+      setRoot(null);
+      node.remove();
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !root) return undefined;
+    previousFocus.current = document.activeElement;
+    const siblings = [...document.body.children].filter((item) => item !== root);
+    const previous = siblings.map((item) => ({ item, inert: item.inert, ariaHidden: item.getAttribute("aria-hidden") }));
+    siblings.forEach((item) => { item.inert = true; item.setAttribute("aria-hidden", "true"); });
+    const priorOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    requestAnimationFrame(() => {
+      const target = dialogRef.current?.querySelector("[data-autofocus], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [href]");
+      (target || dialogRef.current)?.focus?.();
+    });
+    function onKeyDown(event) {
+      if (event.key === "Escape") { event.preventDefault(); onClose?.(); return; }
+      if (event.key !== "Tab") return;
+      const nodes = [...(dialogRef.current?.querySelectorAll(FOCUSABLE) || [])].filter((node) => !node.hasAttribute("hidden"));
+      if (!nodes.length) { event.preventDefault(); dialogRef.current?.focus(); return; }
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      if (!dialogRef.current?.contains(document.activeElement)) { event.preventDefault(); first.focus(); }
+      else if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.body.style.overflow = priorOverflow;
+      previous.forEach(({ item, inert, ariaHidden }) => {
+        item.inert = inert;
+        if (ariaHidden === null) item.removeAttribute("aria-hidden"); else item.setAttribute("aria-hidden", ariaHidden);
+      });
+      previousFocus.current?.focus?.();
+    };
+  }, [open, root, onClose]);
+  return { root, dialogRef };
+}
+
+export function Overlay({ open, onClose, title, description, children, mode = "modal", size = "md", closeOnBackdrop = true, className, hideHeader = false, label }) {
+  const reduceMotion = useReducedMotion();
   const widths = { sm: "max-w-md", md: "max-w-2xl", lg: "max-w-4xl", xl: "max-w-6xl" };
-  return (
+  const titleId = useId();
+  const descriptionId = useId();
+  const { root, dialogRef } = useOverlayPortal(open, onClose);
+  const panelClass = mode === "drawer"
+    ? "inset-y-0 right-0 h-full w-full max-w-md border-y-0 border-r-0"
+    : mode === "sheet"
+      ? "inset-x-0 bottom-0 max-h-[92dvh] w-full rounded-t-[24px]"
+      : mode === "full"
+        ? "inset-0 h-full w-full max-h-none rounded-none border-0"
+        : cn("bottom-0 left-1/2 w-full -translate-x-1/2 rounded-t-[24px] sm:bottom-auto sm:top-1/2 sm:-translate-y-1/2 sm:rounded-[16px]", widths[size]);
+  const initial = mode === "drawer" ? { x: "100%" } : mode === "sheet" ? { y: "100%" } : mode === "full" ? { opacity: 0 } : { y: 30, opacity: 0, scale: 0.99 };
+  const animate = mode === "drawer" ? { x: 0 } : mode === "sheet" ? { y: 0 } : mode === "full" ? { opacity: 1 } : { y: 0, opacity: 1, scale: 1 };
+  const exit = reduceMotion ? animate : initial;
+  if (!root) return null;
+  return createPortal(
     <AnimatePresence>
       {open && (
-        <motion.div className="fixed inset-0 z-[80] flex items-end justify-center p-0 sm:items-center sm:p-4" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-          <motion.button aria-label="Close modal" className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" onClick={onClose} />
+        <motion.div className="fixed inset-0 z-[100]" initial={reduceMotion ? false : { opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: reduceMotion ? 0 : 0.18 }}>
+          <button type="button" aria-label={`Close ${label || title || "dialog"}`} className="absolute inset-0 bg-[var(--overlay)] backdrop-blur-[1px]" onClick={closeOnBackdrop ? onClose : undefined} />
           <motion.div
-            initial={{ y: 48, opacity: 0, scale: 0.98 }}
-            animate={{ y: 0, opacity: 1, scale: 1 }}
-            exit={{ y: 32, opacity: 0, scale: 0.98 }}
-            transition={{ type: "spring", stiffness: 330, damping: 30 }}
-            className={cn("surface relative z-10 flex max-h-[92vh] w-full flex-col overflow-hidden rounded-t-[24px] shadow-elevated sm:rounded-[24px]", widths[size])}
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={title ? titleId : undefined}
+            aria-label={!title ? label : undefined}
+            aria-describedby={description ? descriptionId : undefined}
+            tabIndex={-1}
+            initial={reduceMotion ? false : initial}
+            animate={animate}
+            exit={exit}
+            transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 330, damping: 32 }}
+            className={cn("experience-overlay-panel surface absolute z-10 flex max-h-[94dvh] flex-col overflow-hidden shadow-elevated", panelClass, className)}
           >
-            <div className="flex min-h-16 items-center justify-between gap-4 border-b px-5">
-              <h2 className="text-lg font-semibold">{title}</h2>
-              <button aria-label="Close" onClick={onClose} className="flex h-10 w-10 items-center justify-center rounded-xl hover:bg-[var(--surface-2)]"><X className="h-5 w-5" /></button>
-            </div>
-            <div className="scrollbar-thin overflow-y-auto">{children}</div>
+            {!hideHeader && (
+              <div className="flex min-h-16 items-center justify-between gap-4 border-b px-5">
+                <div>
+                  {title && <h2 id={titleId} className="text-lg font-semibold">{title}</h2>}
+                  {description && <p id={descriptionId} className="mt-1 text-sm text-secondary">{description}</p>}
+                </div>
+                <button type="button" aria-label="Close" onClick={onClose} className="flex h-11 w-11 items-center justify-center rounded-[12px] hover:bg-[var(--surface-2)]"><X className="h-5 w-5" /></button>
+              </div>
+            )}
+            <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto">{children}</div>
           </motion.div>
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    root
   );
+}
+
+export function Modal({ open, onClose, title, description, children, size = "md", closeOnBackdrop = true }) {
+  return <Overlay open={open} onClose={onClose} title={title} description={description} size={size} closeOnBackdrop={closeOnBackdrop}>{children}</Overlay>;
 }
 
 export function EmptyState({ icon: Icon, title, description, action, className }) {
-  return (
-    <div className={cn("flex flex-col items-center justify-center px-6 py-16 text-center", className)}>
-      {Icon && <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)]"><Icon className="h-6 w-6" /></div>}
-      <h3 className="text-lg font-semibold">{title}</h3>
-      <p className="mt-2 max-w-sm text-sm leading-6 text-secondary">{description}</p>
-      {action && <div className="mt-5">{action}</div>}
-    </div>
-  );
+  return <div className={cn("experience-empty flex flex-col items-center justify-center px-6 py-12 text-center", className)}>
+    {Icon ? <span className="experience-empty-icon" aria-hidden="true"><Icon className="h-6 w-6" /></span> : null}
+    <div><h3 className="text-lg font-semibold">{title}</h3>{description ? <p className="mt-2 max-w-md text-sm leading-6 text-secondary">{description}</p> : null}{action ? <div className="mt-5">{action}</div> : null}</div>
+  </div>;
 }
 
-export function ListRow({ icon: Icon, title, subtitle, trailing, onClick, href, className }) {
+export function ListRow({ icon: Icon, title, subtitle, trailing, onClick, href, className, ariaLabel }) {
+  const interactive = Boolean(onClick || href);
   const content = (
     <>
-      {Icon && <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"><Icon className="h-5 w-5" /></span>}
+      {Icon && <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--accent-soft)] text-[var(--accent)]"><Icon className="h-5 w-5" aria-hidden="true" /></span>}
       <span className="min-w-0 flex-1 text-left">
         <span className="block truncate text-sm font-semibold">{title}</span>
         {subtitle && <span className="mt-1 block truncate text-sm text-secondary">{subtitle}</span>}
       </span>
-      {trailing || (onClick || href ? <ChevronRight className="h-4 w-4 text-tertiary" /> : null)}
+      {trailing || (interactive ? <ChevronRight className="h-4 w-4 text-tertiary" aria-hidden="true" /> : null)}
     </>
   );
-  const classes = cn("flex min-h-[60px] w-full items-center gap-3 px-4 py-2.5 transition hover:bg-[var(--surface-2)]", className);
-  if (href) return <a href={href} className={classes}>{content}</a>;
-  return <button type="button" onClick={onClick} className={classes}>{content}</button>;
+  const classes = cn("flex min-h-[60px] w-full items-center gap-3 px-4 py-2.5", interactive && "transition hover:bg-[var(--surface-2)]", className);
+  if (href) return <Link href={href} className={classes} aria-label={ariaLabel}>{content}</Link>;
+  if (onClick) return <button type="button" onClick={onClick} className={classes} aria-label={ariaLabel}>{content}</button>;
+  return <div className={classes}>{content}</div>;
 }
 
-export function ProgressBar({ value, className, color = "var(--accent)" }) {
-  return <div className={cn("h-2 overflow-hidden rounded-full bg-[var(--surface-2)]", className)}><motion.div initial={{ width: 0 }} animate={{ width: `${Math.max(0, Math.min(100, value))}%` }} className="h-full rounded-full" style={{ backgroundColor: color }} /></div>;
+export function ProgressBar({ value, className, color = "var(--accent)", label = "Progress" }) {
+  const reduceMotion = useReducedMotion();
+  const bounded = Math.max(0, Math.min(100, Number(value) || 0));
+  return <div role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={bounded} className={cn("h-2 overflow-hidden rounded-full bg-[var(--surface-2)]", className)}><motion.div initial={reduceMotion ? false : { width: 0 }} animate={{ width: `${bounded}%` }} transition={{ duration: reduceMotion ? 0 : 0.28 }} className="h-full rounded-full" style={{ backgroundColor: color }} /></div>;
 }

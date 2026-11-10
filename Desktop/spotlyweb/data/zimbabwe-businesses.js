@@ -155,6 +155,7 @@ function makeRecord([baseId, name, category, cities, sourceUrl], city, index) {
   const displayName = cities.length === 1 && branch === "Main" ? name : `${name} — ${city} ${branch}`;
   return {
     id: `${baseId}-${slug(city)}-${index + 1}`,
+    brandId: baseId,
     name: displayName,
     brandName: name,
     branchName: branch,
@@ -172,7 +173,7 @@ function makeRecord([baseId, name, category, cities, sourceUrl], city, index) {
     website: sourceUrl.startsWith("http") ? sourceUrl : "",
     address: "",
     currency: "USD",
-    fulfilment: category === "Groceries" || category === "Restaurants" ? ["pickup"] : [],
+    fulfilment: [],
     provisionalMedia: true,
     source: {
       type: "public_web_research",

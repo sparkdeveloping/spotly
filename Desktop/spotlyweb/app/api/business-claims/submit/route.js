@@ -2,14 +2,19 @@ import { FieldValue } from "firebase-admin/firestore";
 import { z } from "zod";
 import { apiError, authenticateRequest, getAdminServices } from "@/lib/firebase-admin";
 import { safeText } from "@/lib/server-helpers";
+import { notifyRoleAudience, notifyUser } from "@/lib/notification-server";
+import { openPlaceById } from "@/lib/open-marketplace-data";
+import { countryCity, countryCurrencies, normalizeCountryCode } from "@/lib/country-engine";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const evidenceSchema = z.object({
   name: z.string().min(1).max(180),
   type: z.string().max(120).default(""),
   url: z.string().url(),
-  size: z.number().int().min(0).max(20 * 1024 * 1024)
+  path: z.string().min(10).max(800),
+  size: z.number().int().min(1).max(10 * 1024 * 1024)
 });
 
 const provisionalSchema = z.object({
@@ -17,8 +22,18 @@ const provisionalSchema = z.object({
   name: z.string().min(2).max(180),
   brandName: z.string().max(180).optional(),
   category: z.string().max(100).optional(),
+  businessType: z.enum([
+    "grocery_retail",
+    "restaurant_food",
+    "ticketing_events",
+    "appointments_services",
+    "accommodation_activities",
+    "directory_profile"
+  ]).optional(),
+  capabilities: z.array(z.string().max(80)).max(30).optional(),
+  operatingModel: z.string().max(80).optional(),
   city: z.string().max(100).optional(),
-  country: z.string().max(8).optional(),
+  country: z.enum(["ZW", "MW"]).optional(),
   website: z.string().max(500).optional(),
   description: z.string().max(1000).optional(),
   organizationName: z.string().max(180).optional(),
@@ -34,17 +49,32 @@ const provisionalSchema = z.object({
 const schema = z.object({
   businessId: z.string().min(1).max(180),
   organizationId: z.string().max(180).nullable().optional(),
+  branchIds: z.array(z.string().min(1).max(180)).max(100).default([]),
   applicantName: z.string().min(2).max(160),
   phone: z.string().max(40).optional(),
   email: z.string().email().optional(),
-  roleAtBusiness: z.enum(["owner", "authorized_manager", "marketing", "franchisee", "other"]),
+  roleAtBusiness: z.enum([
+    "owner",
+    "authorized_manager",
+    "branch_manager",
+    "authorized_staff",
+    "marketing",
+    "franchisee",
+    "other"
+  ]),
   notes: z.string().max(2000).optional(),
-  evidence: z.array(evidenceSchema).max(20).default([]),
+  evidence: z.array(evidenceSchema).min(1).max(20),
   provisionalBusiness: provisionalSchema.nullable().optional()
 });
 
 function searchTerms(...values) {
-  const words = values.filter(Boolean).join(" ").toLowerCase().replace(/[^a-z0-9\s-]/g, " ").split(/\s+/).filter(Boolean);
+  const words = values
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
   const result = new Set();
   words.forEach((word) => {
     result.add(word);
@@ -53,26 +83,110 @@ function searchTerms(...values) {
   return [...result].slice(0, 120);
 }
 
+function roleForClaim(role, organizationId) {
+  if (role === "owner") return organizationId ? "organization_owner" : "business_owner";
+  if (role === "franchisee" || role === "authorized_manager") return "business_manager";
+  if (role === "branch_manager") return "branch_manager";
+  if (role === "marketing") return "marketing_manager";
+  return "business_staff";
+}
+
+function permissionsForClaim(role) {
+  if (role === "owner") {
+    return ["organization.*", "businesses.*", "branches.*", "catalog.*", "orders.*", "staff.*", "finance.read", "finance.configure", "support.*", "settings.*"];
+  }
+  if (role === "franchisee" || role === "authorized_manager") {
+    return ["businesses.read", "businesses.update", "branches.read", "branches.update", "catalog.*", "orders.*", "staff.read", "finance.read", "support.*"];
+  }
+  if (role === "branch_manager") {
+    return ["businesses.read", "branches.read", "branches.update", "catalog.read", "catalog.update", "orders.*", "staff.read", "support.*"];
+  }
+  if (role === "marketing") return ["businesses.read", "businesses.update", "catalog.read", "promotions.*", "insights.read", "support.*"];
+  return ["businesses.read", "branches.read", "catalog.read", "orders.read", "support.*"];
+}
+
+function defaultFulfilment(capabilities = []) {
+  if (capabilities.includes("pickup_orders")) return ["pickup"];
+  if (capabilities.includes("appointments")) return ["appointment"];
+  if (capabilities.includes("tickets")) return ["ticketing"];
+  if (capabilities.includes("reservations")) return ["reservation"];
+  return ["profile"];
+}
+
 export async function POST(request) {
   try {
     const actor = await authenticateRequest(request);
     if (!actor.email) throw Object.assign(new Error("A primary email-and-password account is required."), { status: 409 });
+
     const input = schema.parse(await request.json());
-    const { auth, db } = getAdminServices();
+    const { auth, db, messaging, storage } = getAdminServices();
     const authUser = await auth.getUser(actor.uid);
     if (!authUser.providerData.some((provider) => provider.providerId === "password")) {
       throw Object.assign(new Error("Create or link an email-and-password credential before claiming a business."), { status: 409 });
     }
+
     const settingsSnapshot = await db.collection("platformSettings").doc("global").get();
-    if (settingsSnapshot.exists && settingsSnapshot.data().launch?.businessClaimsEnabled === false) {
+    const platformSettings = settingsSnapshot.exists ? settingsSnapshot.data() : {};
+    if (platformSettings.launch?.businessClaimsEnabled === false) {
       throw Object.assign(new Error("Business claiming is temporarily unavailable."), { status: 503 });
     }
+
+    // Never trust an uploaded filename/URL supplied by the browser: verify every
+    // attachment is stored inside this user's private claim-evidence namespace.
+    // Prevent another applicant's document or an arbitrary public URL being used.
+    const bucket = storage.bucket();
+    await Promise.all(input.evidence.map(async (file) => {
+      if (!file.path.startsWith(`claim-evidence/${actor.uid}/`) ||
+          file.path.includes("..") ||
+          !file.url.startsWith("https://firebasestorage.googleapis.com/")) {
+        throw Object.assign(new Error("An evidence document is not attached to this account. Upload it again."), { status: 400 });
+      }
+      try {
+        const [metadata] = await bucket.file(file.path).getMetadata();
+        if (Number(metadata.size) !== file.size) throw new Error("Evidence size mismatch");
+      } catch {
+        throw Object.assign(new Error(`We couldn't verify ${file.name}. Return to the verification step and upload it again.`), { status: 409 });
+      }
+    }));
+
+    // A curated directory search can return a place without a Firestore business
+    // document. Reconcile against the server-owned dataset; never accept client-
+    // asserted OpenStreetMap rights or invented place IDs.
+    if (input.provisionalBusiness?.source?.type === "openstreetmap") {
+      const curated = openPlaceById(input.businessId);
+      if (!curated || curated.source?.rightsStatus !== "open_odbl") {
+        throw Object.assign(new Error("The selected public listing needs another lookup. Search for it again."), { status: 409 });
+      }
+      input.provisionalBusiness = {
+        ...input.provisionalBusiness,
+        name: curated.name || input.provisionalBusiness.name,
+        brandName: curated.brandName || curated.name || input.provisionalBusiness.brandName,
+        address: curated.address || input.provisionalBusiness.address,
+        city: curated.city || input.provisionalBusiness.city,
+        country: normalizeCountryCode(curated.country) || input.provisionalBusiness.country,
+        source: curated.source
+      };
+    }
+
+    const selectedBranchIds = [...new Set(input.branchIds)];
+    const selectedBranchSnapshots = selectedBranchIds.length
+      ? await Promise.all(selectedBranchIds.map((branchId) => db.collection("branches").doc(branchId).get()))
+      : [];
+    if (selectedBranchSnapshots.some((snapshot) => !snapshot.exists || snapshot.data()?.businessId !== input.businessId)) {
+      throw Object.assign(new Error("One or more selected locations no longer belong to this business. Search and choose the locations again."), { status: 409 });
+    }
+
+    const verificationPolicy = platformSettings.verification || {};
+    const riskScore = input.provisionalBusiness?.source?.type === "owner_created" ? 20 : 10;
+    const autoApprovalEnabled = Boolean(verificationPolicy.lowRiskAutoApproval) && verificationPolicy.manualReviewRequired === false;
+    const autoApprovalThreshold = Number(verificationPolicy.autoApprovalThreshold || 15);
     const claimId = `${input.businessId}_${actor.uid}`;
     const claimRef = db.collection("businessClaims").doc(claimId);
     const businessRef = db.collection("businesses").doc(input.businessId);
 
     let resolvedOrganizationId = input.organizationId || null;
-    let resolvedBranchId = null;
+    let resolvedBranchIds = selectedBranchIds;
+    let autoApproved = false;
 
     await db.runTransaction(async (transaction) => {
       const [businessSnapshot, existingClaim] = await Promise.all([
@@ -97,88 +211,166 @@ export async function POST(request) {
         }
 
         const ownerCreated = provisional.source?.type === "owner_created";
-        if (ownerCreated) {
-          resolvedOrganizationId = input.organizationId || `org_${input.businessId}`;
-          resolvedBranchId = `branch_${input.businessId}_main`;
-          const organizationRef = db.collection("organizations").doc(resolvedOrganizationId);
-          const branchRef = db.collection("branches").doc(resolvedBranchId);
-          const membershipRef = db.collection("memberships").doc(`${resolvedOrganizationId}_${actor.uid}`);
-
-          transaction.create(organizationRef, {
-            name: safeText(provisional.organizationName || provisional.brandName || provisional.name, 180),
-            legalName: safeText(provisional.legalName || "", 180),
-            ownerIds: [actor.uid],
-            businessIds: [input.businessId],
-            status: "pending_verification",
-            country: provisional.country || "ZW",
-            createdAt: FieldValue.serverTimestamp(),
-            updatedAt: FieldValue.serverTimestamp()
-          });
-          transaction.create(branchRef, {
-            organizationId: resolvedOrganizationId,
-            businessId: input.businessId,
-            name: safeText(provisional.branchName || `${provisional.name} — ${provisional.city || "Main branch"}`, 180),
-            city: safeText(provisional.city || "Harare", 100),
-            address: safeText(provisional.address || "", 500),
-            phone: safeText(provisional.phone || "", 40),
-            email: safeText(provisional.email || "", 254),
-            status: "draft",
-            public: false,
-            fulfilment: ["pickup"],
-            paymentMethods: ["cash", "paynow", "ecocash", "onemoney", "card", "bank_transfer"],
-            acceptedCurrencies: ["USD", "ZWG"],
-            createdAt: FieldValue.serverTimestamp(),
-            updatedAt: FieldValue.serverTimestamp()
-          });
-          transaction.create(membershipRef, {
-            organizationId: resolvedOrganizationId,
-            businessId: input.businessId,
-            businessIds: [input.businessId],
-            branchIds: [resolvedBranchId],
-            userId: actor.uid,
-            role: "organization_owner",
-            permissions: ["organization.*", "businesses.*", "branches.*", "catalog.*", "orders.*", "staff.*", "finance.read", "finance.configure"],
-            status: "active",
-            createdAt: FieldValue.serverTimestamp(),
-            updatedAt: FieldValue.serverTimestamp()
-          });
+        const openCurated = provisional.source?.type === "openstreetmap" && provisional.source?.rightsStatus === "open_odbl";
+        const provisionalCountry = normalizeCountryCode(provisional.country);
+        const provisionalCity = countryCity(provisionalCountry, provisional.city);
+        if (!provisionalCountry || !provisionalCity) throw Object.assign(new Error("Choose a supported country and city for this business."), { status: 422 });
+        if (!ownerCreated && !openCurated) {
+          throw Object.assign(new Error("This listing cannot be claimed until Spotly confirms its source rights."), { status: 409 });
         }
 
+        resolvedOrganizationId = input.organizationId || `org_${input.businessId}`;
+        const resolvedBranchId = `branch_${input.businessId}_main`;
+        resolvedBranchIds = [resolvedBranchId];
+        const organizationRef = db.collection("organizations").doc(resolvedOrganizationId);
+        const branchRef = db.collection("branches").doc(resolvedBranchId);
+        const membershipRef = db.collection("memberships").doc(`${resolvedOrganizationId}_${actor.uid}`);
+        const businessType = provisional.businessType || "directory_profile";
+        const capabilities = ownerCreated ? (provisional.capabilities || []) : ["discover", "save", "share", "directions", "contact"];
+        const branchName = safeText(provisional.branchName || "Main location", 180);
+
+        transaction.create(organizationRef, {
+          name: safeText(provisional.organizationName || provisional.brandName || provisional.name, 180),
+          legalName: safeText(provisional.legalName || "", 180),
+          // Approval is required before an applicant becomes an organization owner.
+          ownerIds: [],
+          businessIds: [input.businessId],
+          branchIds: [resolvedBranchId],
+          status: "pending_verification",
+          country: provisionalCountry,
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp()
+        });
+        transaction.create(branchRef, {
+          organizationId: resolvedOrganizationId,
+          businessId: input.businessId,
+          name: branchName,
+          branchName,
+          displayName: `${safeText(provisional.brandName || provisional.name, 180)} — ${branchName}`,
+          city: provisionalCity.name,
+          country: provisionalCountry,
+          address: safeText(provisional.address || "", 500),
+          phone: safeText(provisional.phone || "", 40),
+          email: safeText(provisional.email || "", 254),
+          status: "draft",
+          public: false,
+          requestedPublic: true,
+          reviewStatus: "pending_launch_review",
+          fulfilment: [],
+          paymentMethods: [],
+          acceptedCurrencies: countryCurrencies(provisionalCountry),
+          searchTerms: searchTerms(provisional.name, branchName, provisional.city, provisional.address),
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp()
+        });
+        transaction.create(membershipRef, {
+          organizationId: resolvedOrganizationId,
+          businessId: input.businessId,
+          businessIds: [input.businessId],
+          branchIds: [resolvedBranchId],
+          userId: actor.uid,
+          email: actor.email,
+          displayName: safeText(input.applicantName || actor.name || actor.email, 160),
+          role: "organization_owner",
+          permissions: permissionsForClaim("owner"),
+          // An application is not an authorization. The reviewer activates this
+          // membership only after verification.
+          status: "pending_verification",
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp()
+        });
+
         transaction.create(businessRef, {
-          organizationId: ownerCreated ? resolvedOrganizationId : null,
-          name: safeText(provisional.name, 180),
+          organizationId: resolvedOrganizationId,
+          name: safeText(provisional.brandName || provisional.name, 180),
           brandName: safeText(provisional.brandName || provisional.name, 180),
           legalName: safeText(provisional.legalName || "", 180),
           category: safeText(provisional.category || "Other", 100),
           categories: [safeText(provisional.category || "Other", 100)],
-          city: safeText(provisional.city || "Zimbabwe", 100),
-          country: provisional.country || "ZW",
+          businessType,
+          capabilities,
+          operatingModel: provisional.operatingModel || "single_location",
+          city: provisionalCity.name,
+          country: provisionalCountry,
           phone: safeText(provisional.phone || "", 40),
           email: safeText(provisional.email || "", 254),
           website: safeText(provisional.website || "", 500),
           instagram: safeText(provisional.instagram || "", 180),
           description: safeText(provisional.description || "", 1000),
-          public: !ownerCreated,
-          status: ownerCreated ? "draft" : "provisional",
+          public: true,
+          status: "provisional",
+          lifecycleStatus: "listed",
+          ownershipStatus: "claim_pending",
           claimStatus: "claim_pending",
-          verificationStatus: ownerCreated ? "pending" : "unverified",
-          ownerIds: ownerCreated ? [actor.uid] : [],
-          branchIds: resolvedBranchId ? [resolvedBranchId] : [],
+          verificationStatus: "pending",
+          commerceVerificationStatus: "not_verified",
+          commerceEnabled: false,
+          commerceVerified: false,
+          fulfilment: [],
+          paymentMethods: [],
+          onboardingStatus: "not_started",
+          ownerIds: [],
+          branchIds: [resolvedBranchId],
+          branchCount: 1,
           searchTerms: searchTerms(provisional.name, provisional.brandName, provisional.category, provisional.city),
-          source: provisional.source || { type: "provisional_import", imported: true, rightsReviewRequired: true },
+          source: provisional.source || { type: "owner_created", imported: false },
           createdAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp()
         });
       } else {
         resolvedOrganizationId = input.organizationId || existingBusiness.organizationId || null;
-        transaction.set(businessRef, { claimStatus: "claim_pending", updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+        const availableBranchIds = existingBusiness.branchIds || [];
+        resolvedBranchIds = selectedBranchIds.length ? selectedBranchIds : availableBranchIds.slice(0, 1);
+        // Older imported listings may lack branch records. Do not block an
+        // ownership application on directory data quality. Verification staff
+        // can reconcile locations before activating operational access.
+
+        autoApproved = autoApprovalEnabled
+          && riskScore <= autoApprovalThreshold
+          && resolvedBranchIds.length > 0
+          && input.evidence.length > 0
+          && ["owner", "franchisee"].includes(input.roleAtBusiness)
+          && existingOwners.length === 0
+          && existingBusiness.claimStatus !== "claimed";
+
+        if (autoApproved) {
+          transaction.set(businessRef, {
+            claimStatus: "claimed",
+            verificationStatus: "approved",
+            ownerIds: input.roleAtBusiness === "owner" ? [...new Set([...existingOwners, actor.uid])] : existingOwners,
+            status: existingBusiness.status === "provisional" ? "active" : existingBusiness.status || "active",
+            public: true,
+            verifiedAt: FieldValue.serverTimestamp(),
+            verifiedBy: "low_risk_policy",
+            updatedAt: FieldValue.serverTimestamp()
+          }, { merge: true });
+
+          const membershipId = `${resolvedOrganizationId || input.businessId}_${actor.uid}`;
+          transaction.set(db.collection("memberships").doc(membershipId), {
+            organizationId: resolvedOrganizationId,
+            businessId: input.businessId,
+            businessIds: FieldValue.arrayUnion(input.businessId),
+            branchIds: FieldValue.arrayUnion(...resolvedBranchIds),
+            userId: actor.uid,
+            email: actor.email,
+            displayName: safeText(input.applicantName || actor.name || actor.email, 160),
+            role: roleForClaim(input.roleAtBusiness, resolvedOrganizationId),
+            permissions: FieldValue.arrayUnion(...permissionsForClaim(input.roleAtBusiness)),
+            status: "active",
+            updatedAt: FieldValue.serverTimestamp()
+          }, { merge: true });
+        } else {
+          transaction.set(businessRef, { claimStatus: "claim_pending", updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+        }
       }
 
       transaction.set(claimRef, {
         businessId: input.businessId,
         organizationId: resolvedOrganizationId,
-        branchId: resolvedBranchId,
+        branchId: resolvedBranchIds[0] || null,
+        branchIds: resolvedBranchIds,
         applicantId: actor.uid,
+        businessName: safeText(input.provisionalBusiness?.name || businessSnapshot.data()?.brandName || businessSnapshot.data()?.name || input.businessId, 180),
         applicantEmail: actor.email,
         applicantName: safeText(input.applicantName || actor.name || "", 160),
         phone: safeText(input.phone || actor.phone_number || "", 40),
@@ -186,27 +378,66 @@ export async function POST(request) {
         evidence: input.evidence,
         notes: safeText(input.notes || "", 2000),
         claimType: input.provisionalBusiness?.source?.type === "owner_created" ? "new_business" : "existing_listing",
-        riskScore: input.provisionalBusiness?.source?.type === "owner_created" ? 20 : 10,
-        status: "submitted",
-        verificationChecklist: {},
+        riskScore,
+        status: autoApproved ? "approved" : "submitted",
+        autoApproved,
+        reviewedBy: autoApproved ? "low_risk_policy" : null,
+        reviewedAt: autoApproved ? FieldValue.serverTimestamp() : null,
+        verificationChecklist: autoApproved ? { ownershipEvidence: true, accountCredential: true, duplicateCheck: true, locationScope: true } : {},
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
 
       transaction.create(db.collection("auditLogs").doc(), {
-        action: "business_claim.submitted",
+        action: autoApproved ? "business_claim.auto_approved" : "business_claim.submitted",
         entityType: "businessClaim",
         entityId: claimId,
         actorId: actor.uid,
         actorEmail: actor.email,
-        metadata: { businessId: input.businessId, organizationId: resolvedOrganizationId, branchId: resolvedBranchId, evidenceCount: input.evidence.length },
+        metadata: {
+          businessId: input.businessId,
+          organizationId: resolvedOrganizationId,
+          branchIds: resolvedBranchIds,
+          evidenceCount: input.evidence.length,
+          riskScore,
+          autoApproved
+        },
         createdAt: FieldValue.serverTimestamp()
       });
     });
 
-    return Response.json({ ok: true, claimId, businessId: input.businessId, organizationId: resolvedOrganizationId, branchId: resolvedBranchId });
+    await Promise.allSettled([
+      notifyUser({
+        db, messaging, auth, userId: actor.uid,
+        title: autoApproved ? "Business access approved" : "Business claim sent to Spotly",
+        body: autoApproved
+          ? "Your business access was approved. Open Spotly Business to continue setup and operations."
+          : "Your claim is saved and waiting for Spotly review. We will notify you here and by email when the review changes.",
+        href: "/", category: "business_claim_review", workspace: "business", module: "reviews",
+        eventType: autoApproved ? "business_claim.approved" : "business_claim.submitted", importance: "high",
+        businessId: input.businessId, entityType: "businessClaim", entityId: claimId, email: true, forceOperationalEmail: true
+      }),
+      ...(!autoApproved ? [notifyRoleAudience({
+        db, messaging, auth, title: `Business claim ready · ${input.provisionalBusiness?.name || input.businessId}`,
+        body: `${safeText(input.applicantName || actor.name || actor.email, 160)} submitted a business claim that needs review.`,
+        href: "/queues/business-claims?status=open", category: "admin_review", workspace: "admin", module: "reviews",
+        eventType: "business_claim.submitted", importance: "high", businessId: input.businessId, entityType: "businessClaim", entityId: claimId, email: true, forceOperationalEmail: true
+      }, ["super_admin", "verification_officer", "operations_manager"])] : [])
+    ]);
+
+    return Response.json({
+      ok: true,
+      claimId,
+      businessId: input.businessId,
+      organizationId: resolvedOrganizationId,
+      branchId: resolvedBranchIds[0] || null,
+      branchIds: resolvedBranchIds,
+      autoApproved
+    });
   } catch (error) {
-    if (error instanceof z.ZodError) return Response.json({ ok: false, error: "Review the claim details and evidence.", details: error.flatten() }, { status: 400 });
+    if (error instanceof z.ZodError) {
+      return Response.json({ ok: false, error: "Review the claim details and evidence.", details: error.flatten() }, { status: 400 });
+    }
     return apiError(error);
   }
 }

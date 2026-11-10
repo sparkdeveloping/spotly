@@ -1,0 +1,91 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const root = process.cwd();
+const read = (path) => readFileSync(join(root, path), "utf8");
+
+const requiredAnimations = [
+  "search-nearby",
+  "basket-add",
+  "route-delivery",
+  "verified-business",
+  "storefront-open",
+  "driver-online",
+  "notification-bell",
+  "empty-basket",
+  "kiosk-scan",
+  "success-burst",
+  "location-pin",
+  "marketplace-discover",
+  "review-pending",
+  "money-flow",
+  "team-collaboration",
+  "support-chat",
+  "analytics-rise",
+  "calendar-schedule",
+];
+
+test("Lottie runtime is a pinned production dependency", () => {
+  const pkg = JSON.parse(read("package.json"));
+  assert.equal(pkg.dependencies?.["lottie-web"], "5.12.2");
+  const lock = read("package-lock.json");
+  assert.match(lock, /node_modules\/lottie-web/);
+});
+
+test("Spotly bundles first-party Lottie assets in Git-safe JavaScript", async () => {
+  const moduleUrl = `${pathToFileURL(join(root, "lib/generated/lottie-assets.js")).href}?test=${Date.now()}`;
+  const { LOTTIE_ASSETS } = await import(moduleUrl);
+  for (const name of requiredAnimations) {
+    const animation = LOTTIE_ASSETS[name];
+    assert.ok(animation, `missing bundled ${name}`);
+    assert.ok(Number(animation.w) > 0 && Number(animation.h) > 0, `${name} needs a viewport`);
+    assert.ok(Number(animation.fr) > 0, `${name} needs a frame rate`);
+    assert.ok(Number(animation.op) > Number(animation.ip), `${name} needs a playable frame range`);
+    assert.ok(Array.isArray(animation.layers) && animation.layers.length > 0, `${name} needs animation layers`);
+    assert.equal(animation.assets?.some?.((asset) => /^https?:/i.test(asset?.u || "")), false, `${name} must not fetch remote media`);
+  }
+});
+
+test("Lottie primitive is lazy, viewport-aware and reduced-motion safe", () => {
+  const source = read("components/spotly-lottie.js");
+  assert.match(source, /import\("lottie-web"\)/);
+  assert.match(source, /useReducedMotion/);
+  assert.match(source, /bundledLottieAsset/);
+  assert.doesNotMatch(source, /fetch\(.*\/lottie\//);
+  assert.match(source, /useInView/);
+  assert.match(source, /animationCache/);
+  assert.match(source, /instance\.goToAndStop\(0, true\)/);
+  assert.match(source, /player\.pause\(\)/);
+  assert.doesNotMatch(source, /https?:\/\//);
+});
+
+test("conversion and high-frequency workflows use semantic Lottie motion", () => {
+  const landing = read("components/coming-soon-app.js");
+  const marketplace = read("components/marketplace-app.js");
+  const kiosk = read("components/business/kiosk.js");
+  const driver = read("components/driver-app.js");
+  const notifications = read("components/notification-center.js");
+  const account = read("components/account-app.js");
+
+  for (const phrase of ["marketplace-discover", "basket-add", "storefront-open", "driver-online", "route-delivery"]) assert.match(landing, new RegExp(phrase));
+  for (const phrase of ["basket-add", "empty-basket", "search-nearby"]) assert.match(marketplace, new RegExp(phrase));
+  assert.match(kiosk, /kiosk-scan/);
+  assert.match(kiosk, /success-burst/);
+  assert.match(driver, /driver-online/);
+  assert.match(driver, /route-delivery/);
+  assert.match(notifications, /notification-bell/);
+  assert.match(account, /marketplace-discover/);
+});
+
+test("shared empty states remain useful without animation or warning motion", () => {
+  const ui = read("components/ui.js");
+  const state = ui.slice(ui.indexOf("export function EmptyState"), ui.indexOf("export function ListRow"));
+  assert.match(state, /<h3/);
+  assert.match(state, /description/);
+  assert.match(state, /action/);
+  assert.doesNotMatch(state, /repeat: Infinity|SpotlyLottie|animate=/);
+  assert.doesNotMatch(ui, /AlertTriangle:\s*"/);
+});

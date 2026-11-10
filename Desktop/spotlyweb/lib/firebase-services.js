@@ -9,7 +9,6 @@ import {
   getDocs,
   limit,
   onSnapshot,
-  orderBy,
   query,
   serverTimestamp,
   setDoc,
@@ -17,9 +16,10 @@ import {
   where,
   writeBatch
 } from "firebase/firestore";
-import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
+import { deleteObject, getDownloadURL, ref, uploadBytes, uploadBytesResumable } from "firebase/storage";
 import { getFirebaseAnalytics, getFirebaseClient } from "@/lib/firebase";
 import { logEvent } from "firebase/analytics";
+import { authenticatedFetch, publicApiFetch } from "@/lib/api-client";
 
 export { DEFAULT_PLATFORM_SETTINGS } from "@/lib/platform-defaults";
 import { DEFAULT_PLATFORM_SETTINGS } from "@/lib/platform-defaults";
@@ -33,6 +33,8 @@ function sdk() {
 function clean(value) {
   if (Array.isArray(value)) return value.map(clean);
   if (value && typeof value === "object") {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return value;
     return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined).map(([key, item]) => [key, clean(item)]));
   }
   return value;
@@ -49,26 +51,44 @@ export function normalizeSearchTerms(...values) {
   return [...prefixes].slice(0, 120);
 }
 
+const ANALYTICS_BLOCKED_KEY = /(email|phone|address|message|notes?|token|password|secret|customer|user_?id|uid|order_?id|query(?!_length)|latitude|longitude|coordinates|display_?name)/i;
+
+function safeAnalyticsParameters(parameters = {}) {
+  return Object.fromEntries(Object.entries(parameters).flatMap(([key, value]) => {
+    if (ANALYTICS_BLOCKED_KEY.test(key) || value === undefined || value === null) return [];
+    if (["string", "number", "boolean"].includes(typeof value)) {
+      const safe = typeof value === "string" ? value.slice(0, 100) : value;
+      return [[key.slice(0, 40), safe]];
+    }
+    return [];
+  }).slice(0, 24));
+}
+
 export async function track(name, parameters = {}) {
   try {
     const analytics = await getFirebaseAnalytics();
-    if (analytics) logEvent(analytics, name, clean(parameters));
+    if (analytics) logEvent(analytics, String(name || "event").replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 40), safeAnalyticsParameters(parameters));
   } catch {
     // Analytics must never block the product experience.
   }
 }
 
-export async function writeAuditLog({ action, entityType, entityId, metadata = {}, actorId, actorEmail }) {
-  const { db } = sdk();
-  return addDoc(collection(db, "auditLogs"), clean({
-    action,
-    entityType,
-    entityId,
-    metadata,
-    actorId: actorId || null,
-    actorEmail: actorEmail || null,
-    createdAt: serverTimestamp()
-  }));
+export async function writeClientTelemetry({ action, entityType, entityId, metadata = {}, actorId }) {
+  if (!actorId) return null;
+  try {
+    const { db } = sdk();
+    const safeMetadata = Object.fromEntries(Object.entries(metadata || {}).flatMap(([key, value]) => {
+      if (!["string", "number", "boolean"].includes(typeof value)) return [];
+      return [[String(key).slice(0, 80), typeof value === "string" ? value.slice(0, 240) : value]];
+    }).slice(0, 24));
+    return await addDoc(collection(db, "clientTelemetry"), clean({
+      action: String(action || "client_event").slice(0, 120), entityType: String(entityType || "client").slice(0, 120),
+      entityId: String(entityId || "").slice(0, 240), metadata: safeMetadata, actorId, createdAt: serverTimestamp()
+    }));
+  } catch {
+    // Untrusted client telemetry is best-effort and must never block the user action it describes.
+    return null;
+  }
 }
 
 export async function ensureUserProfile(user, extras = {}) {
@@ -96,17 +116,45 @@ export async function ensureUserProfile(user, extras = {}) {
   return profileRef;
 }
 
+export async function saveUserPreferences(uid, preferences) {
+  if (!uid) throw new Error("Sign in to save account preferences.");
+  const { db } = sdk();
+  const patch = Object.fromEntries(Object.entries(clean(preferences || {})).map(([key, value]) => [`preferences.${key}`, value]));
+  if (preferences?.language) patch.locale = preferences.language;
+  patch.updatedAt = serverTimestamp();
+  await updateDoc(doc(db, "users", uid), patch);
+}
+
+export async function saveCountryPreference(uid, { countryCode, countrySource = "manual", preferredCity = "" }) {
+  if (!uid) throw new Error("Sign in to save your country.");
+  const { db } = sdk();
+  await updateDoc(doc(db, "users", uid), clean({
+    "preferences.countryCode": countryCode,
+    "preferences.countrySource": countrySource,
+    "preferences.preferredCity": preferredCity,
+    updatedAt: serverTimestamp()
+  }));
+}
+
+export function subscribeAccountCountryOverride(uid, callback, onError) {
+  if (!uid) return () => {};
+  const { db } = sdk();
+  return onSnapshot(doc(db, "accountCountryOverrides", uid), (snapshot) => {
+    const data = snapshot.exists() ? snapshot.data() : null;
+    callback(data?.active === false ? null : data);
+  }, onError);
+}
+
+export async function saveUserProfileDetails(uid, values) {
+  if (!uid) throw new Error("Sign in to update your profile.");
+  const { db } = sdk();
+  await setDoc(doc(db, "users", uid), clean({ ...values, updatedAt: serverTimestamp() }), { merge: true });
+}
+
 export function subscribeUserProfile(uid, callback, onError) {
   if (!uid) return () => {};
   const { db } = sdk();
   return onSnapshot(doc(db, "users", uid), (snapshot) => callback(snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null), onError);
-}
-
-export function subscribePlatformSettings(callback, onError) {
-  const { db } = sdk();
-  return onSnapshot(doc(db, "platformSettings", "global"), (snapshot) => {
-    callback(snapshot.exists() ? mergeSettings(DEFAULT_PLATFORM_SETTINGS, snapshot.data()) : DEFAULT_PLATFORM_SETTINGS);
-  }, onError);
 }
 
 function mergeSettings(base, override) {
@@ -118,48 +166,86 @@ function mergeSettings(base, override) {
   ]));
 }
 
-export async function savePlatformSettings(settings, actor) {
-  const { db } = sdk();
-  await setDoc(doc(db, "platformSettings", "global"), clean({ ...settings, updatedAt: serverTimestamp(), updatedBy: actor?.uid || null }), { merge: true });
-  await writeAuditLog({ action: "platform_settings.updated", entityType: "platformSettings", entityId: "global", actorId: actor?.uid, actorEmail: actor?.email });
+export async function savePlatformSettings(settings) {
+  const safe = { ...(settings || {}) };
+  for (const key of ["serviceAvailability", "serviceAvailabilityRevisionId", "serviceAvailabilityRevisionNumber", "serviceAvailabilityPublishedAt", "serviceAvailabilityPublishedBy", "serviceAvailabilityPublishedByEmail", "serviceAvailabilityPublishNote", "serviceAvailabilityUpdatedAt", "serviceAvailabilityUpdatedBy"]) delete safe[key];
+  await authenticatedFetch("/api/admin/settings", { method: "PATCH", body: JSON.stringify({ settings: safe }) });
 }
 
 export async function joinWaitlist(payload) {
-  const { db } = sdk();
-  const normalizedEmail = payload.email.trim().toLowerCase();
-  const id = normalizedEmail.replace(/[^a-z0-9]/g, "_");
-  const entryRef = doc(db, "waitlistEntries", id);
-  const existing = await getDoc(entryRef);
-  const values = clean({
-    name: payload.name || "",
-    city: payload.city || "",
-    interests: payload.interests || [],
-    locale: payload.locale || "en",
-    consent: Boolean(payload.consent),
-    source: payload.source || "coming_soon",
-    email: normalizedEmail,
-    updatedAt: serverTimestamp()
-  });
-  await setDoc(entryRef, existing.exists() ? values : { ...values, country: "ZW", status: "waiting", createdAt: serverTimestamp() }, { merge: true });
-  await track("waitlist_joined", { source: payload.source || "coming_soon", city: payload.city || "" });
+  const result = await publicApiFetch("/api/public/waitlist", { method: "POST", body: JSON.stringify(payload) });
+  await track(result.alreadyJoined ? "waitlist_updated" : "waitlist_joined", { source: payload.source || "coming_soon", city: payload.city || "" });
+  return result;
 }
 
 export async function submitPartnershipLead(payload) {
-  const { db } = sdk();
-  const result = await addDoc(collection(db, "partnershipLeads"), clean({ ...payload, status: "new", createdAt: serverTimestamp(), updatedAt: serverTimestamp() }));
+  const result = await publicApiFetch("/api/public/partnership", { method: "POST", body: JSON.stringify(payload) });
   await track("partnership_lead_submitted", { type: payload.type || "general" });
   return result.id;
 }
 
-export async function searchBusinesses(searchText, max = 20) {
-  const { db } = sdk();
-  const term = searchText.trim().toLowerCase();
-  if (!term) {
-    const snapshot = await getDocs(query(collection(db, "businesses"), where("public", "==", true), orderBy("name"), limit(max)));
-    return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
-  }
-  const snapshot = await getDocs(query(collection(db, "businesses"), where("searchTerms", "array-contains", term.slice(0, 18)), limit(max)));
-  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+export async function searchBusinesses(searchText, max = 20, options = {}) {
+  const queryText = String(searchText || "").trim();
+  const params = new URLSearchParams({ limit: String(Math.min(Math.max(Number(max || 20), 1), 250)) });
+  if (queryText) params.set("q", queryText);
+  if (options.city) params.set("city", String(options.city));
+  if (options.locations === true) params.set("locations", "1");
+  // General business discovery is also used by the claim flow, which must include public
+  // provisional/unclaimed listings rather than only businesses already live for ordering.
+  const result = await publicApiFetch(`/api/public/directory?${params.toString()}`, { cache: "no-store" });
+  return result.businesses || [];
+}
+
+export function isCustomerLiveBusiness(item = {}) {
+  const state = String(item.lifecycleStatus || "").toLowerCase();
+  const currentStatus = String(item.status || "").toLowerCase();
+  return item.public === true && (["active", "paused"].includes(currentStatus) || ["live", "paused"].includes(state));
+}
+
+export async function searchLiveBusinesses(searchText, max = 20, options = {}) {
+  const queryText = String(searchText || "").trim();
+  const params = new URLSearchParams({ limit: String(Math.min(Math.max(Number(max || 20), 1), 250)) });
+  if (queryText) params.set("q", queryText);
+  if (options.country) params.set("country", String(options.country));
+  if (options.city) params.set("city", String(options.city));
+  if (options.service) params.set("service", String(options.service));
+  const result = await publicApiFetch(`/api/public/marketplace?${params.toString()}`, { cache: "default" });
+  return (result.businesses || []).filter(item => isCustomerLiveBusiness(item) || item.assistRequestAvailable === true).slice(0, max);
+}
+
+
+export async function searchSpotly(searchText, max = 40, options = {}) {
+  const queryText = String(searchText || "").trim();
+  const params = new URLSearchParams({ limit: String(Math.min(Math.max(Number(max || 40), 1), 80)) });
+  if (queryText) params.set("q", queryText);
+  if (options.country) params.set("country", String(options.country));
+  if (options.city) params.set("city", String(options.city));
+  if (options.service) params.set("service", String(options.service));
+  if (options.type && options.type !== "all") params.set("type", String(options.type));
+  return publicApiFetch(`/api/public/search?${params.toString()}`, { cache: "default" });
+}
+
+export async function loadServiceFeed(service, options = {}) {
+  const params = new URLSearchParams({ service: String(service || ""), limit: String(Math.min(Math.max(Number(options.limit || 24), 8), 48)) });
+  if (options.country) params.set("country", String(options.country));
+  if (options.city) params.set("city", String(options.city));
+  if (options.area) params.set("area", String(options.area));
+  if (options.query) params.set("q", String(options.query));
+  if (Number(options.offset || 0) > 0) params.set("offset", String(Number(options.offset)));
+  if (options.category && options.category !== "all") params.set("category", options.category);
+  if (Number(options.businessOffset || 0) > 0) params.set("businessOffset", String(Number(options.businessOffset)));
+  return publicApiFetch(`/api/public/service-feed?${params.toString()}`, { cache: "default" });
+}
+
+export async function loadPublicMarketplaceBusiness(businessId) {
+  if (!businessId) return { branches: [], products: [] };
+  return publicApiFetch(`/api/public/marketplace/business?businessId=${encodeURIComponent(businessId)}`, { cache: "default" });
+}
+
+export async function getFeaturedBusinesses(featuredIds = [], max = 6) {
+  if (!featuredIds.length) return [];
+  const records = await Promise.all(featuredIds.slice(0, max).map((id) => getBusiness(id).catch(() => null)));
+  return records.filter((item) => item && isCustomerLiveBusiness(item) && ["approved", "verified"].includes(item.verificationStatus));
 }
 
 export async function getBusiness(id) {
@@ -168,151 +254,160 @@ export async function getBusiness(id) {
   return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
 }
 
+
+function sortBranchRecords(records = []) {
+  return [...records].sort((a, b) => String(a.branchName || a.name || a.displayName || "").localeCompare(String(b.branchName || b.name || b.displayName || ""), "en", { sensitivity: "base" }));
+}
+
+function sortProductRecords(records = []) {
+  return [...records].sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "en", { sensitivity: "base" }));
+}
+
+function sortNewestFirst(records = []) {
+  const time = (value) => {
+    if (!value) return 0;
+    if (typeof value?.toMillis === "function") return value.toMillis();
+    const parsed = new Date(value).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  return [...records].sort((a, b) => time(b.updatedAt || b.createdAt || b.submittedAt) - time(a.updatedAt || a.createdAt || a.submittedAt));
+}
+
+export function notifyBranchesChanged(businessId) {
+  if (typeof window === "undefined" || !businessId) return;
+  window.dispatchEvent(new CustomEvent("spotly:branches-changed", { detail: { businessId } }));
+}
+
+export async function getBranchesForBusiness(businessId) {
+  if (!businessId) return [];
+  const payload = await authenticatedFetch(`/api/business/branches?businessId=${encodeURIComponent(businessId)}`, { cache: "no-store" });
+  return sortBranchRecords(payload.branches || []);
+}
+
+export async function getPublicBranchesForBusiness(businessId) {
+  if (!businessId) return [];
+  const result = await publicApiFetch(`/api/public/directory/business?businessId=${encodeURIComponent(businessId)}`, { cache: "no-store" });
+  return sortBranchRecords(result.branches || []);
+}
+
 export function subscribeBusinesses(callback, options = {}) {
   const { db } = sdk();
   const constraints = [];
   if (options.claimStatus) constraints.push(where("claimStatus", "==", options.claimStatus));
-  constraints.push(orderBy("name"), limit(options.limit || 100));
-  return onSnapshot(query(collection(db, "businesses"), ...constraints), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), options.onError);
+  constraints.push(limit(Math.max(options.limit || 100, 250)));
+  return onSnapshot(query(collection(db, "businesses"), ...constraints), (snapshot) => {
+    const records = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
+      .filter((item) => item.status !== "archived" && !item.canonicalBusinessId)
+      .sort((a, b) => String(a.name || a.brandName || "").localeCompare(String(b.name || b.brandName || ""), "en", { sensitivity: "base" }));
+    callback(records.slice(0, options.limit || 100));
+  }, options.onError);
 }
 
-export async function createBusinessDraft(payload, user) {
+export async function saveClaimDraft(userId, draft) {
+  if (!userId) throw new Error("Sign in to save this claim across devices.");
   const { db } = sdk();
-  const organizationRef = doc(collection(db, "organizations"));
-  const businessRef = doc(collection(db, "businesses"));
-  const branchRef = doc(collection(db, "branches"));
-  const batch = writeBatch(db);
-  const organization = clean({
-    name: payload.organizationName || payload.name,
-    ownerIds: user ? [user.uid] : [],
-    status: "onboarding",
-    businessIds: [businessRef.id],
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  });
-  const business = clean({
-    organizationId: organizationRef.id,
-    name: payload.name,
-    legalName: payload.legalName || "",
-    description: payload.description || "",
-    category: payload.category || "Groceries",
-    categories: payload.categories || [payload.category || "Groceries"],
-    phone: payload.phone || "",
-    email: payload.email || user?.email || "",
-    website: payload.website || "",
-    instagram: payload.instagram || "",
-    city: payload.city || "Harare",
-    country: "ZW",
-    currency: payload.currency || "USD",
-    public: false,
-    status: "draft",
-    claimStatus: "claimed_pending_verification",
-    verificationStatus: "not_submitted",
-    ownerIds: user ? [user.uid] : [],
-    branchIds: [branchRef.id],
-    searchTerms: normalizeSearchTerms(payload.name, payload.category, payload.city, payload.phone, payload.instagram),
-    source: { type: "owner_created", imported: false },
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  });
-  const branch = clean({
-    organizationId: organizationRef.id,
-    businessId: businessRef.id,
-    name: payload.branchName || `${payload.name} — ${payload.city || "Main branch"}`,
-    city: payload.city || "Harare",
-    address: payload.address || "",
-    phone: payload.phone || "",
-    status: "draft",
-    public: false,
-    fulfilment: ["pickup"],
-    openingHours: defaultOpeningHours(),
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  });
-  batch.set(organizationRef, organization);
-  batch.set(businessRef, business);
-  batch.set(branchRef, branch);
-  if (user) batch.set(doc(db, "memberships", `${organizationRef.id}_${user.uid}`), { organizationId: organizationRef.id, userId: user.uid, role: "owner", businessIds: [businessRef.id], branchIds: [branchRef.id], status: "active", createdAt: serverTimestamp() });
-  await batch.commit();
-  await writeAuditLog({ action: "business.created", entityType: "business", entityId: businessRef.id, actorId: user?.uid, actorEmail: user?.email });
-  return { organizationId: organizationRef.id, businessId: businessRef.id, branchId: branchRef.id };
+  const id = draft.id || `claim_${Date.now()}`;
+  await setDoc(doc(db, "businessClaimDrafts", `${userId}_${id}`), clean({ ...draft, id, applicantId: userId, status: "draft", updatedAt: serverTimestamp(), createdAt: draft.createdAt || serverTimestamp() }), { merge: true });
+  return id;
 }
 
-export async function submitBusinessClaim(payload, user) {
+export function subscribeClaimDrafts(userId, callback, onError) {
+  if (!userId) return () => {};
   const { db } = sdk();
-  const claimRef = doc(collection(db, "businessClaims"));
-  await setDoc(claimRef, clean({
-    businessId: payload.businessId,
-    organizationId: payload.organizationId || null,
-    applicantId: user.uid,
-    applicantEmail: user.email || payload.email || "",
-    applicantName: payload.applicantName || user.displayName || "",
-    phone: payload.phone || user.phoneNumber || "",
-    roleAtBusiness: payload.roleAtBusiness || "owner",
-    evidence: payload.evidence || [],
-    notes: payload.notes || "",
-    riskScore: payload.riskScore || 0,
-    status: "submitted",
-    verificationChecklist: {},
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  }));
-  await updateDoc(doc(db, "businesses", payload.businessId), { claimStatus: "claim_pending", updatedAt: serverTimestamp() });
-  await writeAuditLog({ action: "business_claim.submitted", entityType: "businessClaim", entityId: claimRef.id, actorId: user.uid, actorEmail: user.email, metadata: { businessId: payload.businessId } });
-  await track("business_claim_submitted", { business_id: payload.businessId });
-  return claimRef.id;
+  return onSnapshot(query(collection(db, "businessClaimDrafts"), where("applicantId", "==", userId), limit(100)), (snapshot) => callback(sortNewestFirst(snapshot.docs.map((item) => ({ id: item.data().id || item.id.split("_").slice(1).join("_"), recordId: item.id, ...item.data() }))).slice(0, 25)), onError);
+}
+
+export async function getClaimDraft(userId, draftId) {
+  if (!userId || !draftId) return null;
+  const { db } = sdk();
+  const snapshot = await getDoc(doc(db, "businessClaimDrafts", `${userId}_${draftId}`));
+  return snapshot.exists() ? { recordId: snapshot.id, ...snapshot.data() } : null;
+}
+
+export async function deleteClaimDraft(userId, draftId) {
+  if (!userId || !draftId) return;
+  const { db } = sdk();
+  await deleteDoc(doc(db, "businessClaimDrafts", `${userId}_${draftId}`));
+}
+
+export function subscribeClaim(claimId, callback, onError) {
+  if (!claimId) return () => {};
+  const { db } = sdk();
+  return onSnapshot(doc(db, "businessClaims", claimId), (snapshot) => callback(snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null), onError);
+}
+
+export async function deleteClaimEvidence(path) {
+  if (!path) return;
+  const { storage } = sdk();
+  await deleteObject(ref(storage, path));
+}
+
+export function uploadClaimEvidence(userId, draftId, file, onProgress) {
+  if (!userId) return Promise.reject(new Error("Sign in before uploading evidence."));
+  const { storage } = sdk();
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const fileRef = ref(storage, `claim-evidence/${userId}/${draftId}/${Date.now()}-${safeName}`);
+  const mimeByExtension = {
+    pdf: "application/pdf", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+    doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  };
+  const contentType = file.type || mimeByExtension[file.name.split(".").pop()?.toLowerCase()] || "application/octet-stream";
+  const task = uploadBytesResumable(fileRef, file, { contentType, customMetadata: { userId, draftId, originalName: file.name } });
+  return new Promise((resolve, reject) => {
+    task.on("state_changed", (snapshot) => onProgress?.(Math.round((snapshot.bytesTransferred / Math.max(snapshot.totalBytes, 1)) * 100)), reject, async () => {
+      resolve({ name: file.name, type: contentType, size: file.size, path: fileRef.fullPath, url: await getDownloadURL(fileRef), uploadedAt: new Date().toISOString() });
+    });
+  });
 }
 
 export function subscribeClaims(callback, options = {}) {
   const { db } = sdk();
-  const constraints = [orderBy("createdAt", "desc"), limit(options.limit || 100)];
-  if (options.applicantId) constraints.unshift(where("applicantId", "==", options.applicantId));
-  if (options.status) constraints.unshift(where("status", "==", options.status));
-  return onSnapshot(query(collection(db, "businessClaims"), ...constraints), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), options.onError);
+  const constraints = [];
+  if (options.applicantId) constraints.push(where("applicantId", "==", options.applicantId));
+  if (options.status) constraints.push(where("status", "==", options.status));
+  constraints.push(limit(Math.max(options.limit || 100, 250)));
+  return onSnapshot(query(collection(db, "businessClaims"), ...constraints), (snapshot) => callback(sortNewestFirst(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))).slice(0, options.limit || 100)), options.onError);
 }
 
 export async function decideBusinessClaim(claim, decision, actor, reason = "") {
-  const { db } = sdk();
-  const batch = writeBatch(db);
-  const status = decision === "approve" ? "approved" : decision === "request" ? "needs_information" : "rejected";
-  batch.update(doc(db, "businessClaims", claim.id), { status, decisionReason: reason, reviewedBy: actor.uid, reviewedAt: serverTimestamp(), updatedAt: serverTimestamp() });
-  if (decision === "approve") {
-    const newBusiness = claim.claimType === "new_business";
-    batch.update(doc(db, "businesses", claim.businessId), {
-      claimStatus: "claimed",
-      verificationStatus: "approved",
-      ownerIds: [claim.applicantId],
-      status: newBusiness ? "draft" : "active",
-      public: newBusiness ? false : true,
-      updatedAt: serverTimestamp()
-    });
-    batch.set(doc(db, "memberships", `${claim.organizationId || claim.businessId}_${claim.applicantId}`), {
-      organizationId: claim.organizationId || null,
-      businessId: claim.businessId,
-      businessIds: [claim.businessId],
-      branchIds: claim.branchId ? [claim.branchId] : [],
-      userId: claim.applicantId,
-      role: claim.organizationId ? "organization_owner" : "business_owner",
-      status: "active",
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    }, { merge: true });
-  } else {
-    batch.update(doc(db, "businesses", claim.businessId), { claimStatus: decision === "request" ? "claim_needs_information" : "unclaimed", updatedAt: serverTimestamp() });
-  }
-  await batch.commit();
-  await writeAuditLog({ action: `business_claim.${status}`, entityType: "businessClaim", entityId: claim.id, actorId: actor.uid, actorEmail: actor.email, metadata: { reason, businessId: claim.businessId } });
+  const response = await authenticatedFetch("/api/admin/business-claims/decision", {
+    method: "POST",
+    body: JSON.stringify({ claimId: claim.id, decision, reason })
+  });
+  return response;
 }
 
 export async function saveBusinessProfile(businessId, values, user) {
   const { db } = sdk();
-  await setDoc(doc(db, "businesses", businessId), clean({
+  const businessRef = doc(db, "businesses", businessId);
+  const searchableKeys = ["name", "brandName", "legalName", "category", "categories", "city", "address", "phone", "instagram"];
+  const updatesSearch = searchableKeys.some((key) => Object.prototype.hasOwnProperty.call(values, key));
+  let searchTerms;
+
+  if (updatesSearch) {
+    const currentSnapshot = await getDoc(businessRef);
+    const current = currentSnapshot.exists() ? currentSnapshot.data() : {};
+    const merged = { ...current, ...values };
+    searchTerms = normalizeSearchTerms(
+      merged.name,
+      merged.brandName,
+      merged.legalName,
+      merged.category,
+      ...(Array.isArray(merged.categories) ? merged.categories : []),
+      merged.city,
+      merged.address,
+      merged.phone,
+      merged.instagram
+    );
+  }
+
+  await setDoc(businessRef, clean({
     ...values,
-    searchTerms: normalizeSearchTerms(values.name, values.category, values.city, values.phone, values.instagram),
+    ...(updatesSearch ? { searchTerms } : {}),
     updatedAt: serverTimestamp(),
     updatedBy: user?.uid || null
   }), { merge: true });
-  await writeAuditLog({ action: "business.updated", entityType: "business", entityId: businessId, actorId: user?.uid, actorEmail: user?.email });
+  await writeClientTelemetry({ action: "business.updated", entityType: "business", entityId: businessId, actorId: user?.uid, actorEmail: user?.email });
 }
 
 export function subscribeMemberships(uid, callback, onError) {
@@ -324,7 +419,32 @@ export function subscribeMemberships(uid, callback, onError) {
 export function subscribeBusinessCatalog(businessId, callback, onError) {
   if (!businessId) return () => {};
   const { db } = sdk();
-  return onSnapshot(query(collection(db, "products"), where("businessId", "==", businessId), orderBy("name"), limit(250)), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), onError);
+  // Business catalogue reads must not disappear just because a composite sort index was not
+  // deployed with the web release. Scope by business in Firestore, then sort deterministically
+  // in the client. This also keeps legacy products without a `name` index entry visible.
+  return onSnapshot(
+    query(collection(db, "products"), where("businessId", "==", businessId), limit(500)),
+    (snapshot) => callback(sortProductRecords(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))),
+    onError
+  );
+}
+
+export function subscribePublicBusinessCatalog(businessId, callback, onError) {
+  if (!businessId) return () => {};
+  let active = true;
+  let timer = null;
+  async function load() {
+    try {
+      const result = await loadPublicMarketplaceBusiness(businessId);
+      if (active) callback(sortProductRecords(result.products || []));
+    } catch (error) {
+      if (active) onError?.(error);
+    } finally {
+      if (active) timer = window.setTimeout(load, 15000);
+    }
+  }
+  load();
+  return () => { active = false; if (timer) window.clearTimeout(timer); };
 }
 
 export async function saveProduct(product, businessId, user) {
@@ -336,6 +456,17 @@ export async function saveProduct(product, businessId, user) {
     description: product.description || "",
     category: product.category || "General",
     image: product.image || "",
+    imageStoragePath: product.imageStoragePath || "",
+    imageRightsStatus: product.imageRightsStatus || (product.image ? "merchant_owned" : ""),
+    imageSourceType: product.imageSourceType || (product.image ? "merchant_owned" : ""),
+    imageProvenance: product.imageProvenance || null,
+    masterProductId: product.masterProductId || null,
+    brand: product.brand || "",
+    variant: product.variant || "",
+    packSize: product.packSize || "",
+    manufacturerSku: product.manufacturerSku || "",
+    publicationState: product.publicationState || (product.published ? "published" : "draft"),
+    branchOverrides: product.branchOverrides || {},
     currency: product.currency || "USD",
     price: Number(product.price || 0),
     compareAtPrice: product.compareAtPrice ? Number(product.compareAtPrice) : null,
@@ -346,6 +477,18 @@ export async function saveProduct(product, businessId, user) {
     stockStatus: product.stockStatus || "in_stock",
     active: product.active !== false,
     pickupEligible: product.pickupEligible !== false,
+    substitutionAllowed: product.substitutionAllowed !== false,
+    itemType: product.itemType || "product",
+    durationMinutes: Number(product.durationMinutes || 0),
+    capacity: Number(product.capacity || 0),
+    startsAt: product.startsAt || null,
+    endsAt: product.endsAt || null,
+    venue: product.venue || "",
+    requiresBusinessReview: Boolean(product.requiresBusinessReview),
+    published: Boolean(product.published),
+    publishedAt: product.publishedAt || null,
+    branchIds: product.branchIds || [],
+    prices: product.prices || { [product.currency || "USD"]: Number(product.price || 0) },
     searchTerms: normalizeSearchTerms(product.name, product.category, product.sku, product.barcode),
     createdAt: product.id ? product.createdAt || serverTimestamp() : serverTimestamp(),
     updatedAt: serverTimestamp(),
@@ -357,54 +500,28 @@ export async function saveProduct(product, businessId, user) {
 export async function removeProduct(productId, actor) {
   const { db } = sdk();
   await deleteDoc(doc(db, "products", productId));
-  await writeAuditLog({ action: "product.deleted", entityType: "product", entityId: productId, actorId: actor?.uid, actorEmail: actor?.email });
+  await writeClientTelemetry({ action: "product.deleted", entityType: "product", entityId: productId, actorId: actor?.uid, actorEmail: actor?.email });
 }
 
 export function subscribeOrdersForBusiness(businessId, callback, onError) {
   if (!businessId) return () => {};
   const { db } = sdk();
-  return onSnapshot(query(collection(db, "orders"), where("businessId", "==", businessId), orderBy("createdAt", "desc"), limit(100)), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), onError);
+  // Keep the live Business queue resilient even when Firebase composite indexes lag a deploy.
+  return onSnapshot(
+    query(collection(db, "orders"), where("businessId", "==", businessId), limit(500)),
+    (snapshot) => callback(sortNewestFirst(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))),
+    onError
+  );
 }
 
 export async function updateOrderStatus(orderId, status, actor, note = "") {
-  const { db } = sdk();
-  const batch = writeBatch(db);
-  batch.update(doc(db, "orders", orderId), { status, updatedAt: serverTimestamp(), updatedBy: actor?.uid || null });
-  const eventRef = doc(collection(db, "orderEvents"));
-  batch.set(eventRef, { orderId, status, note, actorId: actor?.uid || null, createdAt: serverTimestamp() });
-  await batch.commit();
+  return authenticatedFetch("/api/business-orders/update", { method: "POST", body: JSON.stringify({ orderId, changes: { status }, note }) });
 }
 
 export async function createSupportConversation(payload, user) {
-  const { db } = sdk();
-  const conversationRef = doc(collection(db, "supportConversations"));
-  await setDoc(conversationRef, clean({
-    requesterId: user?.uid || null,
-    requesterEmail: user?.email || payload.email || "",
-    requesterName: user?.displayName || payload.name || "",
-    audience: payload.audience || "public",
-    subject: payload.subject,
-    category: payload.category || "general",
-    priority: payload.priority || "normal",
-    status: "open",
-    businessId: payload.businessId || null,
-    assignedTo: null,
-    lastMessage: payload.message,
-    lastMessageAt: serverTimestamp(),
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  }));
-  await addDoc(collection(db, "supportMessages"), clean({
-    conversationId: conversationRef.id,
-    senderId: user?.uid || null,
-    senderName: user?.displayName || payload.name || "Visitor",
-    senderRole: payload.audience || "public",
-    body: payload.message,
-    internal: false,
-    createdAt: serverTimestamp()
-  }));
+  const result = await authenticatedFetch("/api/support/conversations", { method: "POST", body: JSON.stringify({ action: "create", ...payload }) });
   await track("support_conversation_opened", { category: payload.category || "general" });
-  return conversationRef.id;
+  return result.conversationId;
 }
 
 export function subscribeSupportConversations(callback, options = {}) {
@@ -413,42 +530,67 @@ export function subscribeSupportConversations(callback, options = {}) {
   if (options.requesterId) constraints.push(where("requesterId", "==", options.requesterId));
   if (options.businessId) constraints.push(where("businessId", "==", options.businessId));
   if (options.status) constraints.push(where("status", "==", options.status));
-  constraints.push(orderBy("lastMessageAt", "desc"), limit(options.limit || 100));
-  return onSnapshot(query(collection(db, "supportConversations"), ...constraints), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), options.onError);
+  constraints.push(limit(Math.max(options.limit || 100, 100)));
+  return onSnapshot(query(collection(db, "supportConversations"), ...constraints), (snapshot) => {
+    const records = snapshot.docs.map((item) => ({ id: item.id, ...item.data() })).sort((a, b) => {
+      const time = (value) => value?.toMillis?.() ?? (Number.isFinite(Date.parse(value || "")) ? Date.parse(value) : 0);
+      return time(b.lastMessageAt || b.updatedAt || b.createdAt) - time(a.lastMessageAt || a.updatedAt || a.createdAt);
+    });
+    callback(records.slice(0, options.limit || 100));
+  }, options.onError);
 }
 
 export function subscribeSupportMessages(conversationId, callback, onError) {
   if (!conversationId) return () => {};
   const { db } = sdk();
-  return onSnapshot(query(collection(db, "supportMessages"), where("conversationId", "==", conversationId), orderBy("createdAt"), limit(500)), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), onError);
+  return onSnapshot(query(collection(db, "supportMessages"), where("conversationId", "==", conversationId), limit(500)), (snapshot) => {
+    const records = snapshot.docs.map((item) => ({ id: item.id, ...item.data() })).sort((a, b) => {
+      const av = a.createdAt?.toMillis?.() ?? (Date.parse(a.createdAt || 0) || 0);
+      const bv = b.createdAt?.toMillis?.() ?? (Date.parse(b.createdAt || 0) || 0);
+      return av - bv;
+    });
+    callback(records);
+  }, onError);
 }
 
 export async function sendSupportMessage(conversationId, body, user, options = {}) {
-  const { db } = sdk();
-  const batch = writeBatch(db);
-  const messageRef = doc(collection(db, "supportMessages"));
-  batch.set(messageRef, clean({
-    conversationId,
-    senderId: user?.uid || null,
-    senderName: user?.displayName || options.senderName || "Spotly Support",
-    senderRole: options.senderRole || "customer",
-    body,
-    internal: Boolean(options.internal),
-    createdAt: serverTimestamp()
-  }));
-  batch.update(doc(db, "supportConversations", conversationId), {
-    lastMessage: options.internal ? "Internal note" : body,
-    lastMessageAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-    status: options.status || "open"
-  });
-  await batch.commit();
+  return authenticatedFetch("/api/support/conversations", { method: "POST", body: JSON.stringify({
+    action: "message", conversationId, body, attachments: options.attachments || [], context: options.context || null, internal: Boolean(options.internal), status: options.status, senderName: options.senderName, senderRole: options.senderRole
+  }) });
 }
 
 export async function updateSupportConversation(id, values, actor) {
-  const { db } = sdk();
-  await updateDoc(doc(db, "supportConversations", id), clean({ ...values, updatedAt: serverTimestamp() }));
-  await writeAuditLog({ action: "support_conversation.updated", entityType: "supportConversation", entityId: id, actorId: actor?.uid, actorEmail: actor?.email, metadata: values });
+  const safeValues = { status: values.status, assignedTo: values.assignedTo, assignedToName: values.assignedToName, priority: values.priority, satisfaction: values.satisfaction, markRead: values.markRead };
+  return authenticatedFetch("/api/support/conversations", { method: "POST", body: JSON.stringify({ action: "update", conversationId: id, ...clean(safeValues) }) });
+}
+
+export async function uploadSupportAttachment(conversationId, file, userId, onProgress) {
+  if (!conversationId) throw new Error("Start the conversation before adding an attachment.");
+  const { storage } = sdk();
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const fileRef = ref(storage, `support/${conversationId}/${userId || "anonymous"}/${Date.now()}-${safeName}`);
+  const task = uploadBytesResumable(fileRef, file, {
+    contentType: file.type,
+    contentDisposition: `attachment; filename="${safeName}"`,
+    customMetadata: clean({ conversationId, userId: userId || "anonymous", originalName: file.name, scanStatus: "unscanned" })
+  });
+  return new Promise((resolve, reject) => {
+    task.on("state_changed", (snapshot) => onProgress?.(Math.round((snapshot.bytesTransferred / Math.max(snapshot.totalBytes, 1)) * 100)), reject, async () => {
+      resolve({ name: file.name, type: file.type, size: file.size, path: fileRef.fullPath, url: await getDownloadURL(fileRef) });
+    });
+  });
+}
+
+export async function closeSupportConversation(id, user) {
+  return updateSupportConversation(id, { status: "closed" }, user);
+}
+
+export async function reopenSupportConversation(id, user) {
+  return updateSupportConversation(id, { status: "open" }, user);
+}
+
+export async function rateSupportConversation(id, rating, user) {
+  return updateSupportConversation(id, { satisfaction: rating }, user);
 }
 
 export async function uploadFile(path, file, metadata = {}) {
@@ -469,7 +611,6 @@ export async function seedClientData(seed) {
     });
     await batch.commit();
   }
-  await setDoc(doc(db, "platformSettings", "global"), DEFAULT_PLATFORM_SETTINGS, { merge: true });
 }
 
 export function defaultOpeningHours() {
@@ -499,8 +640,11 @@ export function subscribeHelpResources(callback, options = {}) {
   const { db } = sdk();
   const constraints = [];
   if (options.audience) constraints.push(where("audience", "array-contains", options.audience));
-  constraints.push(orderBy("order"), limit(options.limit || 100));
-  return onSnapshot(query(collection(db, "helpResources"), ...constraints), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), options.onError);
+  constraints.push(limit(Math.max(options.limit || 100, 200)));
+  return onSnapshot(query(collection(db, "helpResources"), ...constraints), (snapshot) => {
+    const records = snapshot.docs.map((item) => ({ id: item.id, ...item.data() })).sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+    callback(records.slice(0, options.limit || 100));
+  }, options.onError);
 }
 
 export async function saveHelpResource(resource, actor) {
@@ -527,15 +671,15 @@ export async function saveHelpResource(resource, actor) {
 export async function deleteHelpResource(id, actor) {
   const { db } = sdk();
   await deleteDoc(doc(db, "helpResources", id));
-  await writeAuditLog({ action: "help_resource.deleted", entityType: "helpResource", entityId: id, actorId: actor?.uid, actorEmail: actor?.email });
+  await writeClientTelemetry({ action: "help_resource.deleted", entityType: "helpResource", entityId: id, actorId: actor?.uid, actorEmail: actor?.email });
 }
 
 export function subscribeAnnouncements(callback, options = {}) {
   const { db } = sdk();
   const constraints = [];
   if (options.activeOnly) constraints.push(where("active", "==", true));
-  constraints.push(orderBy("createdAt", "desc"), limit(options.limit || 50));
-  return onSnapshot(query(collection(db, "announcements"), ...constraints), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), options.onError);
+  constraints.push(limit(Math.max(options.limit || 50, 150)));
+  return onSnapshot(query(collection(db, "announcements"), ...constraints), (snapshot) => callback(sortNewestFirst(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))).slice(0, options.limit || 50)), options.onError);
 }
 
 export async function saveAnnouncement(announcement, actor) {
@@ -564,65 +708,113 @@ export function subscribeBusiness(businessId, callback, onError) {
 
 export function subscribeBranches(businessId, callback, onError) {
   if (!businessId) return () => {};
-  const { db } = sdk();
-  return onSnapshot(query(collection(db, "branches"), where("businessId", "==", businessId), orderBy("name"), limit(100)), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), onError);
+  let active = true;
+  let timer = null;
+  let requestVersion = 0;
+
+  async function load() {
+    if (!active) return;
+    const version = ++requestVersion;
+    try {
+      const records = await getBranchesForBusiness(businessId);
+      // A slow old request must never overwrite a newer explicit refresh after a save.
+      if (active && version === requestVersion) callback(records);
+    } catch (error) {
+      if (active && version === requestVersion) onError?.(error);
+    } finally {
+      if (active && version === requestVersion) timer = window.setTimeout(load, 15000);
+    }
+  }
+
+  function refresh(event) {
+    if (!event?.detail?.businessId || event.detail.businessId === businessId) {
+      if (timer) window.clearTimeout(timer);
+      timer = null;
+      // Incrementing inside load makes any already-running request stale.
+      load();
+    }
+  }
+
+  window.addEventListener("spotly:branches-changed", refresh);
+  load();
+  return () => {
+    active = false;
+    requestVersion += 1;
+    if (timer) window.clearTimeout(timer);
+    window.removeEventListener("spotly:branches-changed", refresh);
+  };
 }
 
-export async function saveBranch(branch, businessId, organizationId, actor) {
-  const { db } = sdk();
-  const branchRef = branch.id ? doc(db, "branches", branch.id) : doc(collection(db, "branches"));
-  await setDoc(branchRef, clean({
-    businessId,
-    organizationId: organizationId || null,
-    name: branch.name,
-    city: branch.city || "Harare",
-    address: branch.address || "",
-    phone: branch.phone || "",
-    email: branch.email || "",
-    public: branch.public !== false,
-    status: branch.status || "active",
-    fulfilment: branch.fulfilment || ["pickup"],
-    openingHours: branch.openingHours || defaultOpeningHours(),
-    pickup: branch.pickup || { enabled: true, slotMinutes: 30, slotCapacity: 12, preparationMinutes: 45 },
-    paymentMethods: branch.paymentMethods || ["cash", "paynow", "ecocash", "card"],
-    createdAt: branch.id ? branch.createdAt || serverTimestamp() : serverTimestamp(),
-    updatedAt: serverTimestamp(),
-    updatedBy: actor?.uid || null
-  }), { merge: true });
-  await writeAuditLog({ action: branch.id ? "branch.updated" : "branch.created", entityType: "branch", entityId: branchRef.id, actorId: actor?.uid, actorEmail: actor?.email, metadata: { businessId } });
-  return branchRef.id;
+export function subscribePublicBranches(businessId, callback, onError) {
+  if (!businessId) return () => {};
+  let active = true;
+  let timer = null;
+  async function load() {
+    try {
+      const result = await loadPublicMarketplaceBusiness(businessId);
+      if (active) callback(sortBranchRecords(result.branches || []));
+    } catch (error) {
+      if (active) onError?.(error);
+    } finally {
+      if (active) timer = window.setTimeout(load, 15000);
+    }
+  }
+  load();
+  return () => { active = false; if (timer) window.clearTimeout(timer); };
+}
+
+export async function saveBranch(branch, businessId, organizationId, actor, options = {}) {
+  const response = await authenticatedFetch("/api/business/branches", {
+    method: "POST",
+    body: JSON.stringify({ action: "upsert", businessId, branch: { ...branch, organizationId }, makePrimary: Boolean(options.makePrimary) })
+  });
+  await writeClientTelemetry({ action: branch.id ? "branch.updated.requested" : "branch.created.requested", entityType: "branch", entityId: response.branchId, actorId: actor?.uid, actorEmail: actor?.email, metadata: { businessId } });
+  notifyBranchesChanged(businessId);
+  return response.branchId;
 }
 
 export function subscribeBusinessInvitations(businessId, callback, onError) {
   if (!businessId) return () => {};
-  const { db } = sdk();
-  return onSnapshot(query(collection(db, "businessInvitations"), where("businessId", "==", businessId), orderBy("createdAt", "desc"), limit(100)), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), onError);
+  let active = true;
+  let timer = null;
+  async function load() {
+    try {
+      const result = await authenticatedFetch(`/api/business-team?businessId=${encodeURIComponent(businessId)}`);
+      if (active) callback(result.invitations || []);
+    } catch (error) {
+      if (active) onError?.(error);
+    } finally {
+      if (active) timer = setTimeout(load, 15000);
+    }
+  }
+  load();
+  return () => { active = false; if (timer) clearTimeout(timer); };
 }
 
-export async function inviteBusinessStaff(invitation, business, actor) {
-  const { db } = sdk();
-  const invitationRef = doc(collection(db, "businessInvitations"));
-  await setDoc(invitationRef, clean({
-    businessId: business.id,
-    organizationId: business.organizationId || null,
-    email: invitation.email.trim().toLowerCase(),
-    name: invitation.name || "",
-    role: invitation.role || "staff",
-    branchIds: invitation.branchIds || [],
-    permissions: invitation.permissions || [],
-    status: "pending",
-    invitedBy: actor.uid,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  }));
-  await writeAuditLog({ action: "business_staff.invited", entityType: "businessInvitation", entityId: invitationRef.id, actorId: actor.uid, actorEmail: actor.email, metadata: { businessId: business.id, email: invitation.email } });
-  return invitationRef.id;
+export async function inviteBusinessStaff(invitation, business) {
+  const payload = await authenticatedFetch("/api/business-team", {
+    method: "POST",
+    body: JSON.stringify({
+      action: "invite",
+      businessId: business.id,
+      name: invitation.name || "",
+      email: invitation.email,
+      role: invitation.role || "order_staff",
+      branchIds: invitation.branchIds || [],
+      permissions: invitation.permissions || []
+    })
+  });
+  return payload.invitationId;
 }
 
 export function subscribeBusinessClaimsForBusiness(businessId, callback, onError) {
   if (!businessId) return () => {};
   const { db } = sdk();
-  return onSnapshot(query(collection(db, "businessClaims"), where("businessId", "==", businessId), orderBy("createdAt", "desc"), limit(20)), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), onError);
+  return onSnapshot(
+    query(collection(db, "businessClaims"), where("businessId", "==", businessId), limit(100)),
+    (snapshot) => callback(sortNewestFirst(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))),
+    onError
+  );
 }
 
 export async function saveBusinessFinanceSettings(businessId, finance, actor) {
@@ -639,10 +831,18 @@ export async function saveBusinessFinanceSettings(businessId, finance, actor) {
     accountNumberMasked: finance.accountNumberMasked || "",
     mobileMoneyNumber: finance.mobileMoneyNumber || "",
     taxNumber: finance.taxNumber || "",
+    legalName: finance.legalName || "",
+    companyRegistrationNumber: finance.companyRegistrationNumber || "",
+    bankBranch: finance.bankBranch || "",
+    mobileMoneyProvider: finance.mobileMoneyProvider || "ecocash",
+    fiscalInvoiceEnabled: Boolean(finance.fiscalInvoiceEnabled),
+    invoicePrefix: finance.invoicePrefix || "SPT",
+    settlementReservePercent: Number(finance.settlementReservePercent || 0),
+    payoutMinimum: Number(finance.payoutMinimum || 0),
     updatedAt: serverTimestamp(),
     updatedBy: actor?.uid || null
   }), { merge: true });
-  await writeAuditLog({ action: "business_finance.updated", entityType: "businessFinanceSettings", entityId: businessId, actorId: actor?.uid, actorEmail: actor?.email });
+  await writeClientTelemetry({ action: "business_finance.updated", entityType: "businessFinanceSettings", entityId: businessId, actorId: actor?.uid, actorEmail: actor?.email });
 }
 
 export function subscribeBusinessFinanceSettings(businessId, callback, onError) {
@@ -653,54 +853,36 @@ export function subscribeBusinessFinanceSettings(businessId, callback, onError) 
 
 export function subscribeUsers(callback, options = {}) {
   const { db } = sdk();
-  const constraints = [orderBy("updatedAt", "desc"), limit(options.limit || 250)];
-  return onSnapshot(query(collection(db, "users"), ...constraints), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), options.onError);
+  return onSnapshot(query(collection(db, "users"), limit(Math.max(options.limit || 250, 500))), (snapshot) => {
+    callback(sortNewestFirst(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))).slice(0, options.limit || 250));
+  }, options.onError);
 }
 
 export async function saveUserAccess(userId, access, actor) {
-  const { db } = sdk();
-  await setDoc(doc(db, "users", userId), clean({
-    roles: access.roles || ["customer"],
-    customPermissions: access.customPermissions || [],
-    status: access.status || "active",
-    privateBeta: Boolean(access.privateBeta),
-    updatedAt: serverTimestamp(),
-    updatedBy: actor?.uid || null
-  }), { merge: true });
-  await writeAuditLog({ action: "user_access.updated", entityType: "user", entityId: userId, actorId: actor?.uid, actorEmail: actor?.email, metadata: access });
-}
-
-export async function bootstrapSuperAdmin(user) {
-  const { db } = sdk();
-  await setDoc(doc(db, "users", user.uid), {
-    roles: ["customer", "super_admin"],
-    customPermissions: ["*"],
-    status: "active",
-    updatedAt: serverTimestamp(),
-    updatedBy: user.uid
-  }, { merge: true });
-  await writeAuditLog({ action: "admin.bootstrap", entityType: "user", entityId: user.uid, actorId: user.uid, actorEmail: user.email });
+  return authenticatedFetch("/api/admin/user-access", { method: "POST", body: JSON.stringify({
+    userId, roles: access.roles || ["customer"], customPermissions: access.customPermissions || [], status: access.status || "active"
+  }) });
 }
 
 export function subscribeAuditLogs(callback, options = {}) {
   const { db } = sdk();
-  return onSnapshot(query(collection(db, "auditLogs"), orderBy("createdAt", "desc"), limit(options.limit || 250)), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), options.onError);
+  return onSnapshot(query(collection(db, "auditLogs"), limit(Math.max(options.limit || 250, 500))), (snapshot) => callback(sortNewestFirst(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))).slice(0, options.limit || 250)), options.onError);
 }
 
 export function subscribeWaitlist(callback, options = {}) {
   const { db } = sdk();
-  return onSnapshot(query(collection(db, "waitlistEntries"), orderBy("createdAt", "desc"), limit(options.limit || 500)), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), options.onError);
+  return onSnapshot(query(collection(db, "waitlistEntries"), limit(Math.max(options.limit || 500, 750))), (snapshot) => callback(sortNewestFirst(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))).slice(0, options.limit || 500)), options.onError);
 }
 
 export function subscribePartnershipLeads(callback, options = {}) {
   const { db } = sdk();
-  return onSnapshot(query(collection(db, "partnershipLeads"), orderBy("createdAt", "desc"), limit(options.limit || 250)), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), options.onError);
+  return onSnapshot(query(collection(db, "partnershipLeads"), limit(Math.max(options.limit || 250, 500))), (snapshot) => callback(sortNewestFirst(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))).slice(0, options.limit || 250)), options.onError);
 }
 
 export async function updatePartnershipLead(id, values, actor) {
   const { db } = sdk();
   await updateDoc(doc(db, "partnershipLeads", id), clean({ ...values, updatedAt: serverTimestamp(), updatedBy: actor?.uid || null }));
-  await writeAuditLog({ action: "partnership_lead.updated", entityType: "partnershipLead", entityId: id, actorId: actor?.uid, actorEmail: actor?.email, metadata: values });
+  await writeClientTelemetry({ action: "partnership_lead.updated", entityType: "partnershipLead", entityId: id, actorId: actor?.uid, actorEmail: actor?.email, metadata: values });
 }
 
 export async function adminUpdateBusiness(id, values, actor) {
@@ -711,7 +893,7 @@ export async function adminUpdateBusiness(id, values, actor) {
     updatedAt: serverTimestamp(),
     updatedBy: actor?.uid || null
   }), { merge: true });
-  await writeAuditLog({ action: "admin.business_updated", entityType: "business", entityId: id, actorId: actor?.uid, actorEmail: actor?.email, metadata: values });
+  await writeClientTelemetry({ action: "admin.business_updated", entityType: "business", entityId: id, actorId: actor?.uid, actorEmail: actor?.email, metadata: values });
 }
 
 export async function assignSupportConversation(id, assigneeId, actor) {
@@ -736,15 +918,18 @@ export async function saveRoleTemplate(role, actor) {
 
 export function subscribeRoleTemplates(callback, options = {}) {
   const { db } = sdk();
-  return onSnapshot(query(collection(db, "roleTemplates"), orderBy("level", "desc"), limit(options.limit || 100)), (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), options.onError);
+  return onSnapshot(query(collection(db, "roleTemplates"), limit(Math.max(options.limit || 100, 200))), (snapshot) => {
+    const records = snapshot.docs.map((item) => ({ id: item.id, ...item.data() })).sort((a, b) => Number(b.level || 0) - Number(a.level || 0));
+    callback(records.slice(0, options.limit || 100));
+  }, options.onError);
 }
 
 export function subscribeCustomerOrders(userId, callback, onError) {
   if (!userId) return () => {};
   const { db } = sdk();
   return onSnapshot(
-    query(collection(db, "orders"), where("customerId", "==", userId), orderBy("createdAt", "desc"), limit(100)),
-    (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))),
+    query(collection(db, "orders"), where("customerId", "==", userId), limit(500)),
+    (snapshot) => callback(sortNewestFirst(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))).slice(0, 100)),
     onError
   );
 }
@@ -764,12 +949,18 @@ export async function saveNotificationPreferences(userId, preferences) {
   }), { merge: true });
 }
 
+export function subscribeNotificationPreferences(userId, callback, onError) {
+  if (!userId) return () => {};
+  const { db } = sdk();
+  return onSnapshot(doc(db, "notificationPreferences", userId), (snapshot) => callback(snapshot.exists() ? snapshot.data() : null), onError);
+}
+
 export function subscribeNotifications(userId, callback, onError) {
   if (!userId) return () => {};
   const { db } = sdk();
   return onSnapshot(
-    query(collection(db, "notifications"), where("userId", "==", userId), orderBy("createdAt", "desc"), limit(100)),
-    (snapshot) => callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))),
+    query(collection(db, "notifications"), where("userId", "==", userId), limit(500)),
+    (snapshot) => callback(sortNewestFirst(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))).slice(0, 100)),
     onError
   );
 }
@@ -791,3 +982,50 @@ export function subscribeFavorites(userId, callback, onError) {
   const { db } = sdk();
   return onSnapshot(query(collection(db, "favorites"), where("userId", "==", userId)), (snapshot) => callback(snapshot.docs.map((item) => item.data().businessId)), onError);
 }
+
+function savedItemDocumentId(userId, type, entityId) {
+  const safe = String(entityId || "").trim().replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 140);
+  return `${userId}_${type}_${safe || Date.now().toString(36)}`;
+}
+
+export async function saveSavedItem(userId, item) {
+  if (!userId) throw new Error("Sign in to save this item.");
+  const type = String(item?.type || "item").trim().toLowerCase();
+  const entityId = String(item?.entityId || item?.id || "").trim();
+  if (!entityId) throw new Error("This item cannot be saved yet.");
+  const { db } = sdk();
+  const id = savedItemDocumentId(userId, type, entityId);
+  await setDoc(doc(db, "savedItems", id), clean({
+    userId, type, entityId,
+    businessId: item.businessId || null,
+    branchId: item.branchId || null,
+    title: item.title || item.name || "Saved item",
+    subtitle: item.subtitle || "",
+    image: item.image || "",
+    href: item.href || "",
+    city: item.city || "",
+    area: item.area || "",
+    address: item.address || "",
+    metadata: item.metadata || {},
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  }), { merge: true });
+  return id;
+}
+
+export async function deleteSavedItem(userId, type, entityId) {
+  if (!userId || !entityId) return;
+  const { db } = sdk();
+  await deleteDoc(doc(db, "savedItems", savedItemDocumentId(userId, type, entityId)));
+}
+
+export function subscribeSavedItems(userId, callback, onError) {
+  if (!userId) return () => {};
+  const { db } = sdk();
+  return onSnapshot(
+    query(collection(db, "savedItems"), where("userId", "==", userId), limit(500)),
+    (snapshot) => callback(sortNewestFirst(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))).slice(0, 200)),
+    onError
+  );
+}
+

@@ -3,213 +3,624 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
     function self(uid) { return signedIn() && request.auth.uid == uid; }
-    function anonymousUser() {
-      return signedIn() && request.auth.token.firebase.sign_in_provider == "anonymous";
-    }
-    function hasProfile() {
-      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
-    }
+    function anonymousUser() { return signedIn() && request.auth.token.firebase.sign_in_provider == "anonymous"; }
+    function hasProfile() { return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)); }
     function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
-    function hasRole(role) { return hasProfile() && role in profile().roles; }
+    function hasRole(role) { return hasProfile() && ("roles" in profile()) && role in profile().roles; }
     function hasPermission(permission) {
-      return hasProfile() && ("*" in profile().customPermissions || permission in profile().customPermissions);
-    }
-    function admin() {
-      return signedIn() && (
-        hasRole("super_admin") || hasRole("admin") || hasRole("platform_admin") ||
-        hasPermission("businesses.*") || hasPermission("support.*")
+      return hasProfile() && ("customPermissions" in profile()) && (
+        "*" in profile().customPermissions || permission in profile().customPermissions
       );
     }
-    function superAdmin() { return hasProfile() && (hasRole("super_admin") || "*" in profile().customPermissions); }
+    function platformAdmin() { return hasRole("super_admin") || hasRole("admin") || hasRole("platform_admin") || hasPermission("admin.*"); }
+    function admin() { return platformAdmin(); }
+    function superAdmin() { return hasRole("super_admin") || hasPermission("*"); }
+    function supportStaff() { return platformAdmin() || hasPermission("support.*") || hasPermission("support.read") || hasPermission("support.respond") || hasRole("support_manager") || hasRole("support_agent"); }
+    function financeStaff() { return platformAdmin() || hasPermission("finance.*") || hasPermission("finance.read") || hasRole("finance_admin"); }
+    function claimsStaff() { return platformAdmin() || hasPermission("claims.*") || hasPermission("claims.read") || hasPermission("claims.review") || hasRole("verification_officer"); }
     function activeAccount() { return anonymousUser() || (hasProfile() && !(profile().status in ["suspended", "disabled"])); }
+
     function business(businessId) { return get(/databases/$(database)/documents/businesses/$(businessId)).data; }
-    function businessOwner(businessId) {
-      return activeAccount() && (
-        admin() || request.auth.uid in business(businessId).ownerIds ||
-        exists(/databases/$(database)/documents/memberships/$(business(businessId).organizationId + "_" + request.auth.uid))
+    function membershipIdForBusiness(businessId) { return business(businessId).organizationId + "_" + request.auth.uid; }
+    function membershipExists(businessId) {
+      return activeAccount() && ("organizationId" in business(businessId)) && exists(/databases/$(database)/documents/memberships/$(membershipIdForBusiness(businessId)));
+    }
+    function membership(businessId) { return get(/databases/$(database)/documents/memberships/$(membershipIdForBusiness(businessId))).data; }
+    function membershipActive(businessId) {
+      return membershipExists(businessId) && membership(businessId).status == "active" && (
+        !("expiresAt" in membership(businessId)) || membership(businessId).expiresAt == null || membership(businessId).expiresAt > request.time
       );
+    }
+    function businessScope(businessId) {
+      return membershipActive(businessId) && (
+        membership(businessId).role == "organization_owner" ||
+        ("businessId" in membership(businessId) && membership(businessId).businessId == businessId) ||
+        ("businessIds" in membership(businessId) && businessId in membership(businessId).businessIds)
+      );
+    }
+    function memberPermission(businessId, permission) {
+      return businessScope(businessId) && ("permissions" in membership(businessId)) && (
+        "*" in membership(businessId).permissions || permission in membership(businessId).permissions
+      );
+    }
+    function ownerRole(businessId) {
+      return businessScope(businessId) && membership(businessId).role in ["organization_owner", "business_owner"];
+    }
+    function managerRole(businessId) {
+      return businessScope(businessId) && membership(businessId).role in ["organization_owner", "business_owner", "business_manager"];
+    }
+    function branchManagerRole(businessId) { return businessScope(businessId) && membership(businessId).role == "branch_manager"; }
+    function directOwner(businessId) { return activeAccount() && ("ownerIds" in business(businessId)) && request.auth.uid in business(businessId).ownerIds; }
+    function canViewBusiness(businessId) { return platformAdmin() || directOwner(businessId) || businessScope(businessId); }
+    function canManageBusiness(businessId) {
+      return platformAdmin() || directOwner(businessId) || managerRole(businessId) || memberPermission(businessId, "businesses.*") || memberPermission(businessId, "business.update");
+    }
+    function canViewBranches(businessId) { return canViewBusiness(businessId) || memberPermission(businessId, "branches.read") || memberPermission(businessId, "branches.*"); }
+    function canCreateBranches(businessId) { return platformAdmin() || directOwner(businessId) || managerRole(businessId) || memberPermission(businessId, "branches.*"); }
+    function canManageBranches(businessId) { return canCreateBranches(businessId) || branchManagerRole(businessId) || memberPermission(businessId, "branches.update"); }
+    function branchScope(businessId, branchId) {
+      return platformAdmin() || directOwner(businessId) || managerRole(businessId) || (
+        businessScope(businessId) && ("branchIds" in membership(businessId)) && branchId in membership(businessId).branchIds
+      );
+    }
+    function canReadCatalogue(businessId) { return canViewBusiness(businessId) || memberPermission(businessId, "catalog.*") || memberPermission(businessId, "catalog.read"); }
+    function canEditCatalogue(businessId) { return platformAdmin() || directOwner(businessId) || managerRole(businessId) || memberPermission(businessId, "catalog.*") || memberPermission(businessId, "catalog.update") || memberPermission(businessId, "inventory.*") || memberPermission(businessId, "inventory.update"); }
+    function canReadOrder(businessId, branchId) {
+      return platformAdmin() || directOwner(businessId) || managerRole(businessId) || (
+        businessScope(businessId) && branchScope(businessId, branchId) && (
+          memberPermission(businessId, "orders.*") || memberPermission(businessId, "orders.read") || memberPermission(businessId, "orders.update") || memberPermission(businessId, "orders.manage") || memberPermission(businessId, "orders.pick")
+        )
+      );
+    }
+    function canManageOrder(businessId, branchId) {
+      return platformAdmin() || directOwner(businessId) || managerRole(businessId) || (
+        businessScope(businessId) && branchScope(businessId, branchId) && (
+          memberPermission(businessId, "orders.*") || memberPermission(businessId, "orders.update") || memberPermission(businessId, "orders.manage") || memberPermission(businessId, "orders.pick")
+        )
+      );
+    }
+    function canViewTeam(businessId) { return platformAdmin() || directOwner(businessId) || managerRole(businessId) || memberPermission(businessId, "staff.*") || memberPermission(businessId, "staff.read") || memberPermission(businessId, "staff.manage"); }
+    function canManageTeam(businessId) { return platformAdmin() || directOwner(businessId) || ownerRole(businessId) || memberPermission(businessId, "staff.*") || memberPermission(businessId, "staff.manage"); }
+    function canReadFinance(businessId) { return financeStaff() || directOwner(businessId) || ownerRole(businessId) || memberPermission(businessId, "finance.*") || memberPermission(businessId, "finance.read"); }
+    function canConfigureFinance(businessId) { return platformAdmin() || directOwner(businessId) || ownerRole(businessId) || memberPermission(businessId, "finance.*") || memberPermission(businessId, "finance.configure"); }
+    function publicBusiness(businessId) { return business(businessId).public == true && (business(businessId).status in ["active", "paused"] || business(businessId).lifecycleStatus in ["live", "paused"]); }
+    function publicProduct() { return resource.data.published == true && resource.data.active == true && publicBusiness(resource.data.businessId); }
+
+    function hasStaffProfile() { return signedIn() && exists(/databases/$(database)/documents/staffProfiles/$(request.auth.uid)); }
+    function currentStaffProfile() { return get(/databases/$(database)/documents/staffProfiles/$(request.auth.uid)).data; }
+    function hasStaffRole(roleId) { return hasStaffProfile() && currentStaffProfile().rolePackId == roleId; }
+    function hasStaffPermission(permission) { return hasStaffProfile() && permission in currentStaffProfile().permissions; }
+    function staffMember() {
+      return activeAccount() && (
+        (hasStaffProfile() && currentStaffProfile().status in ["active", "probation", "preboarding", "leave"]) || platformAdmin() ||
+        hasRole("operations_manager") || hasRole("verification_officer") || hasRole("business_success") || hasRole("business_success_manager") ||
+        hasRole("finance_admin") || hasRole("support_manager") || hasRole("support_agent") || hasRole("driver_operations_coordinator") ||
+        hasRole("regional_operations_manager") || hasRole("content_editor") || hasRole("content_manager") || hasRole("marketing_manager") ||
+        hasRole("risk_compliance_officer") || hasRole("people_operations_admin") || hasRole("people_admin")
+      );
+    }
+    function peopleAdmin() {
+      return activeAccount() && (
+        platformAdmin() || hasRole("people_operations_admin") || hasRole("people_admin") || hasStaffRole("platform_admin") ||
+        hasStaffRole("people_operations_admin") || hasPermission("people.*") || hasPermission("people.write") ||
+        hasStaffPermission("people.*") || hasStaffPermission("people.write")
+      );
+    }
+    function staffManager() {
+      return peopleAdmin() || hasRole("operations_manager") || hasRole("regional_operations_manager") || hasRole("support_manager") ||
+        hasRole("business_success_manager") || hasStaffRole("operations_manager") || hasStaffRole("regional_operations_manager") ||
+        hasStaffRole("business_success_manager") || hasPermission("people.approve") || hasStaffPermission("people.approve");
+    }
+    function managesStaff(userId) {
+      return peopleAdmin() || (staffManager() && userId != null && exists(/databases/$(database)/documents/staffProfiles/$(userId)) &&
+        get(/databases/$(database)/documents/staffProfiles/$(userId)).data.managerId == request.auth.uid);
+    }
+    function recruitmentManager() {
+      return peopleAdmin() || hasRole("operations_manager") || hasRole("regional_operations_manager") || hasStaffRole("operations_manager") ||
+        hasStaffRole("regional_operations_manager") || hasPermission("recruitment.*") || hasStaffPermission("recruitment.*");
     }
     function conversation(conversationId) { return get(/databases/$(database)/documents/supportConversations/$(conversationId)).data; }
     function conversationParticipant(conversationId) {
       return activeAccount() && (
-        admin() || conversation(conversationId).requesterId == request.auth.uid ||
-        (conversation(conversationId).businessId != null && businessOwner(conversation(conversationId).businessId))
+        supportStaff() || conversation(conversationId).requesterId == request.auth.uid ||
+        (conversation(conversationId).businessId != null && canViewBusiness(conversation(conversationId).businessId))
       );
     }
 
     match /users/{uid} {
-      allow create: if self(uid) && request.resource.data.roles == ["customer"];
-      allow read: if self(uid) || admin();
+      // Self-registration is deliberately narrow. A customer may never seed roles,
+      // customPermissions or lifecycle values that grant platform authority.
+      allow create: if self(uid) && request.resource.data.uid == uid && request.resource.data.roles == ["customer"] &&
+        request.resource.data.status == "active" && !("customPermissions" in request.resource.data) &&
+        request.resource.data.keys().hasOnly([
+          "uid", "email", "displayName", "phoneNumber", "photoURL", "providers", "locale", "lastSeenAt", "updatedAt", "roles", "status", "createdAt"
+        ]);
+      allow read: if self(uid) || platformAdmin() || hasPermission("users.read");
       allow update: if self(uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-        "displayName", "phoneNumber", "photoURL", "providers", "locale", "lastSeenAt", "updatedAt", "email"
+        "displayName", "phoneNumber", "phone", "photoURL", "providers", "locale", "lastSeenAt", "updatedAt", "email",
+        "preferences", "preferredContact", "pickupContactName", "pickupContactPhone", "accessibilityPreferences"
       ]);
-      allow update, delete: if admin();
+      allow delete: if superAdmin();
+    }
+
+    match /accountCountryOverrides/{uid} {
+      allow read: if self(uid) || platformAdmin() || hasPermission("users.read");
+      allow create, update, delete: if false;
     }
 
     match /platformSettings/{id} {
-      allow read: if true;
-      allow write: if admin();
+      // Authoritative operations configuration is never a public Firestore document.
+      // Customer-safe runtime fields are projected through /api/public/runtime and all
+      // mutations go through audited Admin SDK endpoints.
+      allow read: if platformAdmin() || hasPermission("admin.configuration");
+      allow create, update, delete: if false;
     }
 
+    // Countries & Services rollout drafts and immutable revisions are server-authoritative.
+    // Admin clients must use the revisioned control-plane API so impact/readiness checks cannot be bypassed.
+    match /serviceAvailabilityDrafts/{id} { allow read, write: if false; }
+    match /serviceAvailabilityRevisions/{id} { allow read, write: if false; }
+
+    // Partner CRM, call evidence and invitation tokens are server-only. The
+    // NXT portal checks roles in authenticated API handlers, not client rules.
+    match /nxtProspects/{id} { allow read, write: if false; }
+    match /nxtInteractions/{id} { allow read, write: if false; }
+    match /nxtEvidence/{id} { allow read, write: if false; }
+    match /nxtClaimInvites/{id} { allow read, write: if false; }
+
+    match /platformSecrets/{id} { allow read, write: if false; }
+
     match /businesses/{businessId} {
-      allow read: if resource.data.public == true || businessOwner(businessId);
-      // New businesses are created by authenticated Next.js route handlers after validation.
+      allow read: if resource.data.public == true || canViewBusiness(businessId) || hasPermission("businesses.read");
       allow create: if false;
-      allow update: if admin() || (
-        businessOwner(businessId) &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          "name", "brandName", "legalName", "category", "categories", "description",
-          "phone", "email", "website", "instagram", "facebook", "whatsapp",
-          "city", "country", "address", "currency", "logo", "coverImage",
-          "openingHours", "specialHours", "paymentMethods", "searchTerms",
-          "onboardingProgress", "updatedAt", "updatedBy"
-        ])
-      );
+      // Merchants may edit business configuration, but lifecycle/publication authority is server-only.
+      // In particular public/status/launchReview fields cannot be forged by a browser client.
+      allow update: if canManageBusiness(businessId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        "name", "brandName", "legalName", "category", "categories", "description", "phone", "email", "website", "instagram", "facebook", "whatsapp",
+        "city", "country", "address", "currency", "logo", "coverImage", "openingHours", "specialHours", "paymentMethods", "searchTerms",
+        "businessType", "capabilities", "operatingModel", "onboardingProgress", "onboardingStatus", "onboarding", "preferredLocale", "customerNotes",
+        "teamReviewedAt", "kiosk", "updatedAt", "updatedBy"
+      ]);
       allow delete: if superAdmin();
     }
 
     match /organizations/{organizationId} {
-      allow read: if admin() || (signedIn() && request.auth.uid in resource.data.ownerIds);
-      // Organization creation is performed server-side with its first business claim.
+      allow read: if platformAdmin() || (signedIn() && ("ownerIds" in resource.data) && request.auth.uid in resource.data.ownerIds) ||
+        (signedIn() && exists(/databases/$(database)/documents/memberships/$(organizationId + "_" + request.auth.uid)) &&
+          get(/databases/$(database)/documents/memberships/$(organizationId + "_" + request.auth.uid)).data.status == "active");
       allow create: if false;
-      allow update: if admin() || (signedIn() && request.auth.uid in resource.data.ownerIds);
+      allow update: if platformAdmin() || (signedIn() && ("ownerIds" in resource.data) && request.auth.uid in resource.data.ownerIds);
       allow delete: if superAdmin();
     }
 
     match /branches/{branchId} {
-      allow read: if resource.data.public == true || businessOwner(resource.data.businessId);
-      allow create: if businessOwner(request.resource.data.businessId);
-      allow update, delete: if businessOwner(resource.data.businessId);
+      allow read: if (resource.data.public == true && publicBusiness(resource.data.businessId)) || (canViewBranches(resource.data.businessId) && branchScope(resource.data.businessId, branchId)) || hasPermission("businesses.read");
+      // Location structure and denormalized branch counts are maintained atomically by /api/business/branches.
+      allow create, update, delete: if false;
     }
 
     match /memberships/{membershipId} {
-      allow read: if signedIn() && (resource.data.userId == request.auth.uid || admin() || businessOwner(resource.data.businessId));
-      allow create: if admin() || businessOwner(request.resource.data.businessId);
-      allow update, delete: if admin() || businessOwner(resource.data.businessId);
+      allow read: if signedIn() && (resource.data.userId == request.auth.uid || platformAdmin());
+      allow create, update, delete: if false;
     }
 
     match /businessInvitations/{invitationId} {
-      allow read: if signedIn() && (resource.data.email == request.auth.token.email || admin() || businessOwner(resource.data.businessId));
-      allow create: if businessOwner(request.resource.data.businessId);
-      allow update: if admin() || businessOwner(resource.data.businessId) || resource.data.email == request.auth.token.email;
-      allow delete: if admin() || businessOwner(resource.data.businessId);
+      allow read: if signedIn() && (resource.data.email == request.auth.token.email || platformAdmin());
+      allow create, update, delete: if false;
     }
 
     match /businessClaims/{claimId} {
-      // Claim creation is server-validated to prevent forged approval and risk fields.
       allow create: if false;
-      allow read: if activeAccount() && (resource.data.applicantId == request.auth.uid || admin() || businessOwner(resource.data.businessId));
-      allow update: if admin();
+      allow read: if activeAccount() && (resource.data.applicantId == request.auth.uid || claimsStaff() || canViewBusiness(resource.data.businessId));
+      allow update: if false;
       allow delete: if superAdmin();
     }
 
+    match /businessClaimDrafts/{draftId} {
+      allow create: if activeAccount() && request.resource.data.applicantId == request.auth.uid;
+      allow read: if activeAccount() && (resource.data.applicantId == request.auth.uid || claimsStaff());
+      allow update: if activeAccount() && resource.data.applicantId == request.auth.uid && request.resource.data.applicantId == request.auth.uid;
+      allow delete: if activeAccount() && (resource.data.applicantId == request.auth.uid || platformAdmin());
+    }
+
+    match /businessLaunchReviews/{reviewId} {
+      allow read: if platformAdmin() || hasPermission("businesses.read") || (activeAccount() && resource.data.businessId != null && canViewBusiness(resource.data.businessId));
+      // Submission and decisions run through trusted server endpoints so merchants cannot
+      // approve themselves, make a business live, or forge a Spotly review.
+      allow create, update, delete: if false;
+    }
+
+
+    match /masterProducts/{productId} {
+      allow read: if resource.data.verificationStatus == "verified" && (
+        !("primaryImage" in resource.data) || resource.data.primaryImage == "" ||
+        resource.data.imageRightsStatus in ["merchant_owned", "spotly_photographed", "manufacturer_provided", "licensed"]
+      ) || staffMember() || platformAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /masterProductSuggestions/{suggestionId} {
+      allow read: if platformAdmin() || staffMember() || (activeAccount() && resource.data.submittedBy == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /catalogCollections/{collectionId} {
+      allow read: if (activeAccount() && resource.data.publicationStatus == "active") || staffMember() || platformAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /productObservations/{observationId} {
+      allow read: if staffMember() || platformAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /productImageVersions/{imageId} {
+      allow read: if staffMember() || platformAdmin() || (activeAccount() && resource.data.businessId != null && canReadCatalogue(resource.data.businessId));
+      allow create, update, delete: if false;
+    }
+
+    match /businessLedgerEntries/{entryId} {
+      allow read: if resource.data.businessId != null && canReadFinance(resource.data.businessId);
+      allow create, update, delete: if false;
+    }
+
+    match /businessSettlementAccounts/{businessId} {
+      // Full settlement-account records can contain encrypted banking material and are API-only.
+      allow read, write: if false;
+    }
+
+    match /businessBalanceAccounts/{accountId} {
+      // Materialized merchant balances are server-authoritative and exposed only through scoped APIs.
+      allow read, write: if false;
+    }
+
+    match /catalogueSources/{sourceId} {
+      allow read: if staffMember() || platformAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /catalogImportBatches/{batchId} {
+      allow read: if resource.data.businessId != null && canReadCatalogue(resource.data.businessId);
+      allow create: if canEditCatalogue(request.resource.data.businessId);
+      allow update: if canEditCatalogue(resource.data.businessId) && request.resource.data.businessId == resource.data.businessId;
+      allow delete: if false;
+    }
+
     match /products/{productId} {
-      allow read: if (resource.data.available != false && resource.data.status != "archived") || businessOwner(resource.data.businessId);
-      allow create: if businessOwner(request.resource.data.businessId);
-      allow update, delete: if businessOwner(resource.data.businessId);
+      allow read: if publicProduct() || canReadCatalogue(resource.data.businessId) || hasPermission("businesses.read");
+      allow create: if canEditCatalogue(request.resource.data.businessId);
+      allow update: if canEditCatalogue(resource.data.businessId) && request.resource.data.businessId == resource.data.businessId;
+      allow delete: if canEditCatalogue(resource.data.businessId);
     }
 
     match /orders/{orderId} {
-      allow read: if activeAccount() && (resource.data.customerId == request.auth.uid || businessOwner(resource.data.businessId) || admin());
-      // Production order creation is performed by the authenticated Next.js route handler.
-      allow create: if false;
-      allow update: if businessOwner(resource.data.businessId) || admin();
+      allow read: if activeAccount() && (resource.data.customerId == request.auth.uid || canReadOrder(resource.data.businessId, resource.data.branchId) || hasPermission("orders.read"));
+      allow create, update: if false;
       allow delete: if superAdmin();
     }
 
     match /orderEvents/{eventId} {
       allow read: if activeAccount() && (
-        admin() ||
+        platformAdmin() || hasPermission("orders.read") ||
         get(/databases/$(database)/documents/orders/$(resource.data.orderId)).data.customerId == request.auth.uid ||
-        businessOwner(get(/databases/$(database)/documents/orders/$(resource.data.orderId)).data.businessId)
+        canReadOrder(
+          get(/databases/$(database)/documents/orders/$(resource.data.orderId)).data.businessId,
+          get(/databases/$(database)/documents/orders/$(resource.data.orderId)).data.branchId
+        )
       );
-      allow write: if admin() || (signedIn() && request.resource.data.actorId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /businessFinance/{businessId} {
+      allow read: if canReadFinance(businessId);
+      allow write: if false; // Finance configuration is validated by the server API.
     }
 
     match /businessFinanceSettings/{businessId} {
-      allow read, write: if businessOwner(businessId) || admin();
+      // Legacy read-only collection retained during migration. New writes use /businessFinance via the server API.
+      allow read: if canReadFinance(businessId);
+      allow write: if false;
     }
 
-    match /paymentIntents/{intentId} {
-      allow read, write: if false;
+    match /paymentIntents/{intentId} { allow read, write: if false; }
+
+    match /businessOperationalSettings/{businessId} {
+      allow read: if canViewBusiness(businessId);
+      allow write: if canManageBusiness(businessId) || memberPermission(businessId, "orders.*");
     }
+
+    match /promotions/{promotionId} {
+      allow read: if (("scope" in resource.data) && resource.data.scope == "platform" && platformAdmin()) || ((!(("scope" in resource.data) && resource.data.scope == "platform")) && ((resource.data.active == true && publicBusiness(resource.data.businessId)) || canViewBusiness(resource.data.businessId)));
+      allow create: if (("scope" in request.resource.data) && request.resource.data.scope == "platform" && platformAdmin()) || ((!(("scope" in request.resource.data) && request.resource.data.scope == "platform")) && canManageBusiness(request.resource.data.businessId));
+      allow update: if request.resource.data.scope == resource.data.scope && (
+        (("scope" in resource.data) && resource.data.scope == "platform" && platformAdmin()) ||
+        ((!(("scope" in resource.data) && resource.data.scope == "platform")) && request.resource.data.businessId == resource.data.businessId && canManageBusiness(resource.data.businessId))
+      );
+      allow delete: if (("scope" in resource.data) && resource.data.scope == "platform" && platformAdmin()) || ((!(("scope" in resource.data) && resource.data.scope == "platform")) && canManageBusiness(resource.data.businessId));
+    }
+
+    match /catalogTemplates/{templateId} {
+      allow read: if activeAccount();
+      allow write: if platformAdmin();
+    }
+
+    match /payouts/{payoutId} {
+      allow read: if canReadFinance(resource.data.businessId);
+      allow create, update: if false;
+      allow delete: if superAdmin();
+    }
+
+    match /adminTasks/{taskId} {
+      allow create: if activeAccount() && request.resource.data.requestedBy == request.auth.uid;
+      allow read: if platformAdmin() || hasPermission("claims.read") || hasPermission("support.read") || hasPermission("finance.read") || (activeAccount() && resource.data.requestedBy == request.auth.uid);
+      allow update: if platformAdmin();
+      allow delete: if superAdmin();
+    }
+
+    match /systemStatus/{statusId} { allow read: if platformAdmin(); allow write: if false; }
 
     match /supportConversations/{conversationId} {
-      allow create: if activeAccount() && request.resource.data.requesterId == request.auth.uid;
+      allow create: if false;
       allow read: if conversationParticipant(conversationId);
-      allow update: if conversationParticipant(conversationId) && (
-        admin() || request.resource.data.diff(resource.data).affectedKeys().hasOnly(["lastMessage", "lastMessageAt", "updatedAt", "status"])
-      );
+      allow update: if false;
       allow delete: if superAdmin();
     }
 
     match /supportMessages/{messageId} {
-      allow read: if conversationParticipant(resource.data.conversationId) && (resource.data.internal != true || admin());
-      allow create: if activeAccount() && conversationParticipant(request.resource.data.conversationId) && request.resource.data.senderId == request.auth.uid && (request.resource.data.internal != true || admin());
-      allow update, delete: if admin();
+      allow read: if conversationParticipant(resource.data.conversationId) && (resource.data.internal != true || supportStaff());
+      allow create, update, delete: if false;
     }
 
     match /waitlistEntries/{entryId} {
-      allow create: if request.resource.data.email is string && request.resource.data.email.size() <= 254;
-      allow update: if admin() || (
-        request.resource.data.email == resource.data.email &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          "name", "city", "interests", "locale", "consent", "source", "updatedAt"
-        ])
-      );
-      allow read, delete: if admin();
+      // Public writes use the rate-limited server endpoint so consent and abuse controls are authoritative.
+      allow create, update: if false;
+      allow read, delete: if platformAdmin() || hasPermission("content.*");
     }
+
+    // First-party acquisition counters and contact logs are server-controlled only.
+    // Agency members use the permission-checked Admin API; never client-side Firestore.
+    match /firstAccessMetrics/{id} { allow read, write: if false; }
+    match /firstAccessCampaignMetrics/{id} { allow read, write: if false; }
+    match /firstAccessTouchpoints/{id} { allow read, write: if false; }
+
+    match /rateLimits/{limitId} { allow read, write: if false; }
+    match /securityRateLimits/{limitId} { allow read, write: if false; }
 
     match /partnershipLeads/{leadId} {
-      allow create: if request.resource.data.email is string && request.resource.data.email.size() <= 254;
-      allow read, update, delete: if admin();
+      allow create: if false;
+      allow read, update, delete: if platformAdmin() || hasPermission("content.*");
     }
 
-    match /helpResources/{resourceId} {
-      allow read: if resource.data.published == true || admin();
-      allow write: if admin();
-    }
-
-    match /announcements/{announcementId} {
-      allow read: if resource.data.active == true || admin();
-      allow write: if admin();
-    }
+    match /helpResources/{resourceId} { allow read: if resource.data.published == true || supportStaff(); allow write: if platformAdmin() || hasPermission("content.*"); }
+    match /announcements/{announcementId} { allow read: if resource.data.active == true || platformAdmin(); allow write: if platformAdmin() || hasPermission("content.*"); }
 
     match /notifications/{notificationId} {
       allow read: if activeAccount() && resource.data.userId == request.auth.uid;
       allow update: if activeAccount() && resource.data.userId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["read", "readAt"]);
-      allow create, delete: if admin();
+      allow create, delete: if false;
     }
 
-    match /notificationPreferences/{uid} {
-      allow read, write: if self(uid) || admin();
-    }
-
+    match /notificationPreferences/{uid} { allow read, write: if self(uid) || platformAdmin(); }
     match /pushTokens/{tokenId} {
       allow create: if activeAccount() && request.resource.data.userId == request.auth.uid;
-      allow read, update, delete: if activeAccount() && resource.data.userId == request.auth.uid;
+      allow read: if activeAccount() && resource.data.userId == request.auth.uid;
+      allow update: if activeAccount() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if activeAccount() && resource.data.userId == request.auth.uid;
     }
-
     match /favorites/{favoriteId} {
       allow create: if activeAccount() && request.resource.data.userId == request.auth.uid;
-      allow read, update, delete: if activeAccount() && resource.data.userId == request.auth.uid;
+      allow read: if activeAccount() && resource.data.userId == request.auth.uid;
+      allow update: if activeAccount() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if activeAccount() && resource.data.userId == request.auth.uid;
     }
+    match /savedItems/{savedItemId} {
+      allow create: if activeAccount() && request.resource.data.userId == request.auth.uid;
+      allow read: if activeAccount() && resource.data.userId == request.auth.uid;
+      allow update: if activeAccount() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if activeAccount() && resource.data.userId == request.auth.uid;
+    }
+    // Growth and promotion accounting is server-authoritative. Customer-facing reads use scoped API routes.
+    match /promotionRedemptions/{redemptionId} { allow read, write: if false; }
+    match /referralProfiles/{profileId} { allow read, write: if false; }
+    match /referralCodes/{codeId} { allow read, write: if false; }
+    match /referralClaims/{claimId} { allow read, write: if false; }
+    match /referralRewards/{rewardId} { allow read, write: if false; }
+    match /businessReviews/{reviewId} { allow read, write: if false; }
+    match /availabilityReservations/{reservationId} { allow read, write: if false; }
+
+    // Cloud Functions retry/idempotency leases are server-only. TTL on expiresAt
+    // removes completed/abandoned request records without exposing them to clients.
+    match /functionIdempotency/{requestId} { allow read, write: if false; }
 
     match /auditLogs/{logId} {
-      allow create: if activeAccount() && request.resource.data.actorId == request.auth.uid;
-      allow read: if admin() || hasPermission("audit.read");
+      allow read: if platformAdmin() || hasPermission("audit.read");
+      allow create, update, delete: if false;
+    }
+
+    match /clientTelemetry/{eventId} {
+      // Telemetry is explicitly untrusted and must not be able to impersonate an
+      // email identity or smuggle arbitrary top-level fields into audit tooling.
+      allow create: if activeAccount() && request.resource.data.actorId == request.auth.uid &&
+        request.resource.data.action is string && request.resource.data.action.size() <= 120 &&
+        request.resource.data.entityType is string && request.resource.data.entityType.size() <= 120 &&
+        request.resource.data.entityId is string && request.resource.data.entityId.size() <= 240 &&
+        request.resource.data.metadata is map && request.resource.data.createdAt == request.time &&
+        request.resource.data.diff({}).affectedKeys().hasOnly([
+          "action", "entityType", "entityId", "metadata", "actorId", "createdAt"
+        ]);
+      allow read: if platformAdmin() || hasPermission("audit.read");
       allow update, delete: if false;
     }
+
+    match /paymentCallbacks/{callbackId} { allow read, write: if false; }
+    match /paymentInitiationLocks/{lockId} { allow read, write: if false; }
+    match /customerTransactionRequests/{requestId} { allow read, write: if false; }
+    match /paymentReconciliationIssues/{issueId} { allow read: if financeStaff(); allow write: if false; }
+    match /refundRequests/{refundId} { allow read: if financeStaff(); allow write: if false; }
 
     match /roleTemplates/{roleId} {
       allow read: if activeAccount();
       allow write: if superAdmin();
     }
 
+
+    match /staffProfiles/{userId} {
+      allow read: if self(userId) || peopleAdmin() || (staffManager() && resource.data.managerId == request.auth.uid);
+      // Employment authority (role, permissions, manager and lifecycle) is server-owned.
+      // Employees may update only the narrow self-service fields below.
+      allow create: if false;
+      allow update: if self(userId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        "displayName", "preferredName", "phone", "emergencyContactName", "emergencyContactPhone", "emergencyContactRelationship", "preferredLocale",
+        "workArrangement", "searchTerms", "updatedAt", "updatedBy"
+      ]);
+      allow delete: if false;
+    }
+
+    match /staffTasks/{taskId} {
+      allow read: if staffManager() || (staffMember() && (
+        resource.data.assigneeId == request.auth.uid || resource.data.createdBy == request.auth.uid
+      ));
+      allow create: if staffMember() && (
+        request.resource.data.assigneeId == request.auth.uid || (staffManager() && managesStaff(request.resource.data.assigneeId))
+      );
+      allow update: if (staffManager() && (resource.data.assigneeId == request.auth.uid || managesStaff(resource.data.assigneeId)) &&
+        (request.resource.data.assigneeId == request.auth.uid || managesStaff(request.resource.data.assigneeId))) ||
+        (staffMember() && resource.data.assigneeId == request.auth.uid && request.resource.data.assigneeId == request.auth.uid);
+      allow delete: if peopleAdmin();
+    }
+
+    match /staffShifts/{shiftId} {
+      allow read: if staffManager() || (staffMember() && resource.data.userId == request.auth.uid);
+      allow create: if managesStaff(request.resource.data.userId);
+      allow update: if managesStaff(resource.data.userId) || (staffMember() && resource.data.userId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status", "clockedInAt", "clockedInBy", "clockedOutAt", "clockedOutBy", "updatedAt", "updatedBy"
+        ]));
+      allow delete: if peopleAdmin();
+    }
+
+    match /staffLeaveRequests/{requestId} {
+      allow read: if staffManager() || (staffMember() && resource.data.userId == request.auth.uid);
+      allow create: if staffMember() && request.resource.data.userId == request.auth.uid;
+      allow update: if managesStaff(resource.data.userId) || (staffMember() && resource.data.userId == request.auth.uid &&
+        resource.data.status == "pending" && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "type", "startDate", "endDate", "days", "reason", "coverageNote", "status", "updatedAt"
+        ]));
+      allow delete: if peopleAdmin();
+    }
+
+    match /staffTrainingAssignments/{assignmentId} {
+      allow read: if staffManager() || (staffMember() && resource.data.userId == request.auth.uid);
+      allow create: if peopleAdmin() || (staffMember() && request.resource.data.userId == request.auth.uid &&
+        request.resource.data.diff({}).affectedKeys().hasOnly([
+          "userId", "employeeName", "title", "description", "status", "progress", "assessmentScore",
+          "completedAt", "renewalDate", "updatedAt", "createdAt", "assignedBy"
+        ]));
+      allow update: if peopleAdmin() || (staffMember() && resource.data.userId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status", "progress", "assessmentScore", "completedAt", "renewalDate", "updatedAt"
+        ]));
+      allow delete: if peopleAdmin();
+    }
+
+    match /staffPerformance/{recordId} {
+      allow read: if staffManager() || (staffMember() && resource.data.userId == request.auth.uid);
+      allow create: if managesStaff(request.resource.data.userId);
+      allow update, delete: if managesStaff(resource.data.userId);
+    }
+
+    match /staffPayrollRecords/{recordId} {
+      allow read: if peopleAdmin() || hasPermission("payroll.read") || (staffMember() && resource.data.userId == request.auth.uid);
+      allow create, update: if peopleAdmin() || hasPermission("payroll.prepare") || hasPermission("finance.*");
+      allow delete: if peopleAdmin();
+    }
+
+    match /staffAssets/{assetId} {
+      allow read: if staffManager() || (staffMember() && resource.data.assignedTo == request.auth.uid);
+      allow create, update, delete: if peopleAdmin();
+    }
+
+    match /workforceRequests/{requestId} {
+      allow read: if staffManager();
+      allow create: if staffManager() && request.resource.data.requestedBy == request.auth.uid;
+      allow update, delete: if peopleAdmin();
+    }
+
+    match /careerJobs/{jobId} {
+      allow read, write: if false;
+    }
+
+    match /careerApplications/{applicationId} {
+      allow read, write: if false;
+    }
+
+    match /careerApplicationRateLimits/{rateId} {
+      allow read, write: if false;
+    }
+
+    match /staffCandidates/{candidateId} {
+      allow read, create, update: if recruitmentManager();
+      allow delete: if peopleAdmin();
+    }
+
+    match /staffSupportRequests/{requestId} {
+      allow read: if peopleAdmin() || (staffMember() && resource.data.userId == request.auth.uid);
+      allow create: if staffMember() && request.resource.data.userId == request.auth.uid;
+      allow update: if peopleAdmin() || (staffMember() && resource.data.userId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(["description", "status", "updatedAt"]));
+      allow delete: if peopleAdmin();
+    }
+
     match /emailLogs/{logId} {
       allow read: if admin();
       allow write: if false;
     }
+
+
+    // Driver, delivery, dispatch and kiosk operational records are server-authoritative.
+    // UI clients use scoped API routes; privileged Admin SDK writes bypass these rules.
+    // Prospective Driver invitations are server-authoritative. A public client cannot enumerate leads, tokens or contact keys.
+    match /operationGrants/{grantId} { allow read, write: if false; }
+    match /operationsRuns/{runId} { allow read, write: if false; }
+    match /driverLeads/{leadId} { allow read, write: if false; }
+    match /driverLeadContacts/{contactId} { allow read, write: if false; }
+    match /driverLeadTouchpoints/{touchpointId} { allow read, write: if false; }
+    match /driverAcquisitionCampaigns/{campaignId} { allow read, write: if false; }
+    match /driverAcquisitionMetrics/{metricId} { allow read, write: if false; }
+    match /driverAcquisitionSessions/{sessionId} { allow read, write: if false; }
+    match /driverApplications/{uid} {
+      allow read: if self(uid) || platformAdmin() || hasPermission("drivers.read") || hasPermission("drivers.*");
+      allow create, update, delete: if false;
+    }
+    match /drivers/{uid} {
+      allow read: if self(uid) || platformAdmin() || hasPermission("drivers.read") || hasPermission("drivers.*");
+      allow create, update, delete: if false;
+    }
+    match /driverDocuments/{documentId} {
+      allow read: if activeAccount() && (resource.data.driverId == request.auth.uid || platformAdmin() || hasPermission("drivers.documents.read") || hasPermission("drivers.*"));
+      allow create, update, delete: if false;
+    }
+    match /driverVehicles/{vehicleId} {
+      allow read: if activeAccount() && (resource.data.driverId == request.auth.uid || platformAdmin() || hasPermission("drivers.read") || hasPermission("drivers.*"));
+      allow create, update, delete: if false;
+    }
+    match /driverPayoutAccounts/{uid} { allow read, write: if false; }
+    match /driverPresence/{uid} { allow read, write: if false; }
+    match /deliveryJobs/{jobId} { allow read, write: if false; }
+    match /deliveryOffers/{offerId} { allow read, write: if false; }
+    match /deliveryEvents/{eventId} { allow read, write: if false; }
+    match /rideTrips/{rideId} { allow read, write: if false; }
+    match /rideOffers/{offerId} { allow read, write: if false; }
+    match /rideEvents/{eventId} { allow read, write: if false; }
+    match /parcelJobs/{jobId} { allow read, write: if false; }
+    match /parcelOffers/{offerId} { allow read, write: if false; }
+    match /parcelEvents/{eventId} { allow read, write: if false; }
+    match /driverEarningsLedger/{entryId} { allow read, write: if false; }
+    match /driverBalanceAccounts/{accountId} { allow read, write: if false; }
+    match /driverPayouts/{payoutId} { allow read, write: if false; }
+    match /driverIncidents/{incidentId} { allow read, write: if false; }
+    match /dispatchZones/{zoneId} { allow read: if activeAccount(); allow write: if false; }
+    match /kioskDevices/{deviceId} { allow read, write: if false; }
 
     match /{document=**} {
       allow read, write: if false;

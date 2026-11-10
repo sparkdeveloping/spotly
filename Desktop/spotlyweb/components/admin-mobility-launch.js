@@ -1,0 +1,111 @@
+"use client";
+import Link from "next/link";
+import {useCallback,useEffect,useState} from "react";
+import {CarFront,Package,RefreshCw,ShieldAlert,CheckCircle2,FlaskConical} from "lucide-react";
+import {authenticatedFetch} from "@/lib/api-client";
+import {Badge,Button,Card,PageSkeleton} from "@/components/ui";
+
+export function AdminMobilityLaunch({openRide,openSend}){
+ const [data,setData]=useState(null),[error,setError]=useState(""),[notice,setNotice]=useState("");
+ const [loading,setLoading]=useState(true),[busy,setBusy]=useState(""),[confirm,setConfirm]=useState({});
+ const [routeStatus,setRouteStatus]=useState(null),[routeProbe,setRouteProbe]=useState(null),[routeBusy,setRouteBusy]=useState("");
+
+ const load=useCallback(async()=>{
+  setLoading(true);
+  try{setData(await authenticatedFetch("/api/admin/service-launch",{cache:"no-store"}));setError("");}
+  catch(e){setError(e.message);}
+  finally{setLoading(false);}
+ },[]);
+ useEffect(()=>{
+   load();
+   authenticatedFetch("/api/admin/mobility-routing-diagnostics",{cache:"no-store"})
+     .then(setRouteStatus).catch(e=>setRouteStatus({configured:false,message:e.message}));
+ },[load]);
+ async function testRouting(country){
+  setRouteBusy(country);setRouteProbe(null);
+  try{
+   const result=await authenticatedFetch("/api/admin/mobility-routing-diagnostics",{
+    method:"POST",body:JSON.stringify({country})
+   });
+   setRouteProbe(result);
+  }catch(e){setRouteProbe({ok:false,error:e.message});}
+  finally{setRouteBusy("");}
+ }
+ async function change(service,action){
+  setBusy(service);setError("");setNotice("");
+  try{
+   const result=await authenticatedFetch("/api/admin/service-launch",{method:"POST",body:JSON.stringify({
+    service,action,confirmation:confirm[service]||""
+   })});
+   setConfirm(s=>({...s,[service]:""}));setNotice(result.warning||"Availability staged. Publish it from Countries & Services.");await load();
+  }catch(e){setError(e.message);}
+  finally{setBusy("");}
+ }
+ if(loading)return <PageSkeleton cards={2} rows={2}/>;
+ return <div className="space-y-6">
+  <Card className="v7-role-hero p-6">
+   <p className="text-xs font-semibold uppercase tracking-[.12em] text-[var(--accent)]">Service Launch & Controls</p>
+   <h2 className="mt-2 text-2xl font-semibold">Where and when SpotlyRide and SpotlySend operate</h2>
+   <p className="mt-3 max-w-3xl text-sm leading-6 text-secondary">Configure cities, service zones, pricing and proof requirements in the service tabs. Activate only after all technical checks and real Driver/support field verification. Availability changes are staged into the shared Countries & Services draft; production changes only when that revision is published.</p>
+   <div className="mt-4 flex flex-wrap gap-3"><Button variant="outline" onClick={openRide}><CarFront className="h-4 w-4"/>Configure Ride</Button><Button variant="outline" onClick={openSend}><Package className="h-4 w-4"/>Configure Send</Button><Button asChild variant="outline"><Link href="/system?tab=services"><ShieldAlert className="h-4 w-4"/>Countries & Services</Link></Button><Button asChild variant="ghost"><Link href="/system?tab=launch">Full launch readiness</Link></Button></div>
+  </Card>
+  <Card className="p-5 sm:p-6">
+   <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs font-semibold uppercase tracking-[.12em] text-tertiary">Scoped real-account testing</p><h3 className="mt-2 text-lg font-semibold">Operations grants for real-account testing</h3><p className="mt-2 max-w-3xl text-sm leading-6 text-secondary">Grant a real account temporary service operations, Driver operations, payment sandbox or location override access from Customers &amp; accounts. Operations runs use real routing and pricing inputs but remain isolated from production rides, payments, payouts and Driver GPS.</p></div><FlaskConical className="h-6 w-6 text-[var(--accent)]"/></div>
+   <div className="mt-4"><Button asChild variant="outline"><Link href="/customers">Manage Operations grants</Link></Button></div>
+  </Card>
+  <Card className="p-5 sm:p-6">
+   <div className="flex flex-wrap items-start justify-between gap-4">
+    <div><p className="text-xs font-semibold uppercase tracking-[.12em] text-tertiary">Licensed road routing</p>
+     <h3 className="mt-2 text-lg font-semibold">Test real routes before approving service</h3>
+     <p className="mt-2 max-w-2xl text-sm leading-6 text-secondary">Check the configured MapMap/OSRM provider with real road geometry. This does not activate SpotlyRide or SpotlySend, dispatch Drivers, or collect payments.</p>
+    </div>
+    <Badge tone={routeStatus?.configured?"success":"warning"}>{routeStatus?.configured?"Credential configuration present":"Routing not configured here"}</Badge>
+   </div>
+   <p className="mt-3 text-xs text-secondary">Provider: {routeStatus?.provider||"Checking..."} · {routeStatus?.message||"Checking this deployment."}</p>
+   <div className="mt-4 flex flex-wrap gap-3">
+    <Button variant="outline" loading={routeBusy==="ZW"} disabled={Boolean(routeBusy)} onClick={()=>testRouting("ZW")}>Test Harare driving route</Button>
+    <Button variant="outline" loading={routeBusy==="MW"} disabled={Boolean(routeBusy)} onClick={()=>testRouting("MW")}>Test Lilongwe driving route</Button>
+   </div>
+   {routeProbe?<div className={`mt-4 rounded-xl border p-4 text-sm ${routeProbe.ok?"border-[var(--border)] bg-[var(--surface-2)]":"border-danger bg-[var(--danger-soft)] text-danger"}`} role="status">
+    {routeProbe.ok?<><span className="font-semibold">{routeProbe.city}: Route confirmed</span><p className="mt-1 text-secondary">{routeProbe.distanceKm} km · about {routeProbe.durationMinutes} min · {routeProbe.durationMs} ms provider response</p><p className="mt-2 text-xs text-secondary">This confirms only this sample route. City geofences, field testing and launch permissions remain separate.</p></>:
+     <span>{routeProbe.error||"Route test failed."}</span>}
+   </div>:null}
+  </Card>
+  {error&&<div role="alert" className="rounded-xl border border-danger bg-[var(--danger-soft)] p-4 text-sm text-danger">{error}</div>}{notice&&<div role="status" className="rounded-xl bg-[var(--success-soft)] p-4 text-sm text-success">{notice}</div>}
+  <div className="grid gap-5 lg:grid-cols-2">
+   {(data?.services||[]).map(item=>{
+    const name=item.service==="ride"?"SpotlyRide":"SpotlySend";
+    const action=item.enabled?"disable":"enable";
+    const phrase=(action==="enable"?"ENABLE":"DISABLE")+" SPOTLY "+item.service.toUpperCase();
+    return <Card className="p-5 sm:p-6" key={item.service}>
+     <div className="flex items-center justify-between gap-3">
+      <div><p className="text-xs font-semibold uppercase tracking-wide text-tertiary">{name}</p><h3 className="mt-2 text-xl font-semibold">{item.enabled?"Accepting requests":"Customer booking disabled"}</h3></div>
+      <Badge tone={item.enabled?"success":item.ready?"warning":"danger"}>{item.enabled?"Published live":item.ready?"Ready to stage":"Blocked"}</Badge>
+     </div>
+     <p className="mt-3 text-sm text-secondary">{item.cityCount} approved pickup cities · {item.geoFenceCount} geofences · scheduler {item.scheduler?.ready?"recurring calls verified":item.schedulerVerified?"flag set, calls not verified":"not verified"}</p>
+     <p className="mt-2 text-xs text-secondary">Paynow credentials: {item.paynowCredentialsConfigured?
+       "present for the configured fare currency · transaction validation still required":
+       "not configured for this service currency (cash may still be available)"}</p>
+     <p className="mt-2 text-xs text-secondary">{item.scheduler?.lastTickAt?
+       `Last authenticated dispatcher: ${item.scheduler.ageSeconds}s ago · ${item.scheduler.consecutive} consecutive successful intervals`:
+       "No recent authenticated dispatch heartbeat recorded"}</p>
+     {item.missing?.length?<div className="mt-5 rounded-xl bg-[var(--surface-2)] p-4">
+      <p className="text-sm font-semibold">Before enabling</p>
+      <ul className="mt-2 space-y-1.5 pl-5 text-xs leading-5 text-secondary">{item.missing.map(m=><li key={m} className="list-disc">{m}</li>)}</ul>
+     </div>:<p className="mt-5 flex items-center gap-2 text-sm text-success"><CheckCircle2 className="h-4 w-4"/>Technical launch prerequisites are recorded. Field approval is still required.</p>}
+     <div className="mt-5 grid gap-3">
+      <label className="text-xs font-semibold">Type <span className="font-mono">{phrase}</span> to {action==="enable"?"activate":"pause"} this service
+       <input className="field-control mt-2 w-full" autoComplete="off" value={confirm[item.service]||""} onChange={e=>setConfirm(s=>({...s,[item.service]:e.target.value}))} placeholder={phrase}/>
+      </label>
+      <Button color={action==="enable"?"primary":undefined} variant={action==="disable"?"outline":"primary"} loading={busy===item.service}
+       disabled={confirm[item.service]!==phrase||(action==="enable"&&!item.ready)} onClick={()=>change(item.service,action)}>
+       {action==="enable"?"Stage live availability":"Stage pause"}
+      </Button>
+      <Button variant="ghost" onClick={item.service==="ride"?openRide:openSend}>Edit {name} pricing, cities, zones and dispatch</Button>
+     </div>
+    </Card>;
+   })}
+  </div>
+  <Button variant="ghost" onClick={load}><RefreshCw className="h-4 w-4"/>Refresh launch status</Button>
+ </div>;
+}

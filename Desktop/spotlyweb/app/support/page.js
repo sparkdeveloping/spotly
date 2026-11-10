@@ -1,7 +1,9 @@
+import { Suspense } from "react";
 import { SupportApp } from "@/components/support-app";
+import { CustomerPageSkeleton } from "@/components/customer-loading";
 
-export const metadata = { title: "Help and live support", description: "Spotly guides, orientation resources, and live support." };
+export const metadata = { title: "Help and support", description: "Practical Spotly guides and support conversations." };
 
 export default function SupportPage() {
-  return <SupportApp />;
+  return <Suspense fallback={<CustomerPageSkeleton compact />}><SupportApp /></Suspense>;
 }
